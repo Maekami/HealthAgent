@@ -8,12 +8,7 @@ from .actions import (
     VisitAction,
     WriteAction,
 )
-from .history import (
-    CompressedHistory,
-    RetryFeedbackRecord,
-    SearchRecord,
-    VisitedPageRecord,
-)
+from .history import CompressedHistory, SearchRecord, VisitedPageRecord
 from .observations import SearchObservation, SearchResultItem, VisitObservation
 from .outputs import AbstainDecision, EpisodeResult, FinalNote
 from .post import ImageTextView, PostPackage, VideoTextView
@@ -34,7 +29,6 @@ __all__ = [
     "ImageTextView",
     "InstanceRubrics",
     "PostPackage",
-    "RetryFeedbackRecord",
     "SearchAction",
     "SearchObservation",
     "SearchRecord",

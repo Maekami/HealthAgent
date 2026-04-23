@@ -4,25 +4,30 @@ import json
 from json_repair import repair_json
 import re
 from dataclasses import dataclass
-from typing import Any, Mapping, Optional, Sequence
+from typing import Annotated, Any, Mapping, Optional, Sequence, Type, Union
 
-from pydantic import ValidationError
+from pydantic import Field, ValidationError, create_model
 
 from healthagent.prompts.actor import (
     build_actor_system_prompt,
     build_actor_user_prompt,
+    build_write_refinement_system_prompt,
+    build_write_refinement_user_prompt,
 )
 from healthagent.schemas import (
+    AbstainAction,
     ActorDecision,
+    ActorThinking,
     CompressedHistory,
     InstanceRubrics,
     PostPackage,
+    SearchAction,
     VisitAction,
     WriteAction,
 )
+from healthagent.schemas.base import SchemaBase
 from healthagent.tools import ChatClient
 from healthagent.tools.url_utils import canonicalize_url
-from healthagent.utils.note_formatting import dedupe_support_urls
 
 
 @dataclass(slots=True)
@@ -31,6 +36,16 @@ class ActorRun:
     prompt: str
     raw_output: str
 
+class WriteRefinementOutput(SchemaBase):
+    text: str
+    reason: str
+
+
+@dataclass(slots=True)
+class WriteRefinementRun:
+    output: WriteRefinementOutput
+    prompt: str
+    raw_output: str
 
 class ActorError(RuntimeError):
     """Raised when actor generation or validation fails."""
@@ -63,16 +78,12 @@ class Actor:
         temperature: float = 0.0,
         max_tokens: int = 1000,
         use_json_mode: bool = True,
-        max_text_chars: int = 270,
-        max_platform_chars: int = 280,
     ) -> None:
         self.chat_client = chat_client
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.use_json_mode = use_json_mode
-        self.max_text_chars = max_text_chars
-        self.max_platform_chars = max_platform_chars
 
     def _build_messages(
         self,
@@ -83,6 +94,7 @@ class Actor:
         history: CompressedHistory,
         budget_state: Mapping[str, Any],
         actor_memory: Sequence[str] | None = None,
+        available_actions: Sequence[str] | None = None,
     ) -> tuple[list[dict[str, str]], str]:
         system_prompt = build_actor_system_prompt()
         user_prompt = build_actor_user_prompt(
@@ -92,6 +104,7 @@ class Actor:
             history=history,
             budget_state=budget_state,
             actor_memory=actor_memory,
+            available_actions=available_actions,
         )
 
         combined_prompt = (
@@ -170,12 +183,48 @@ class Actor:
 
         return allowed_urls
 
+    def _allowed_action_models(
+        self,
+        available_actions: Sequence[str] | None,
+    ) -> list[Type[SchemaBase]]:
+        action_map: dict[str, Type[SchemaBase]] = {
+            "search": SearchAction,
+            "visit": VisitAction,
+            "write": WriteAction,
+            "abstain": AbstainAction,
+        }
+        allowed = list(available_actions or ["search", "visit", "write", "abstain"])
+        models = [action_map[name] for name in allowed]
+        if not models:
+            raise ActorError("No available actions were provided.")
+        return models
+
+    def _build_response_schema(
+        self,
+        available_actions: Sequence[str] | None,
+    ) -> dict[str, Any]:
+        allowed_models = self._allowed_action_models(available_actions)
+        action_union = Union.__getitem__(tuple(allowed_models))
+        constrained_action_type = Annotated[
+            action_union,
+            Field(discriminator="action"),
+        ]
+
+        DynamicActorDecision = create_model(
+            "DynamicActorDecision",
+            thinking=(ActorThinking, ...),
+            action=(constrained_action_type, ...),
+            __base__=SchemaBase,
+        )
+        return DynamicActorDecision.model_json_schema()
+
     def _validate_decision(
         self,
         decision: ActorDecision,
         history: CompressedHistory,
         *,
         post_url_aliases: Mapping[str, Sequence[str]] | None = None,
+        available_actions: Sequence[str] | None = None,
     ) -> ActorDecision:
         candidate_urls = self._candidate_urls_from_history(history)
         visited_urls = self._visited_urls_from_history(history)
@@ -186,6 +235,13 @@ class Actor:
             candidate_urls |= alias_group
 
         action = decision.action
+        allowed_actions_set = set(available_actions or ["search", "visit", "write", "abstain"])
+
+        if action.action not in allowed_actions_set:
+            raise ActorError(
+                f"Action '{action.action}' is not allowed in this step. "
+                f"Allowed actions: {sorted(allowed_actions_set)}"
+            )
 
         if isinstance(action, VisitAction):
             normalized_url = canonicalize_url(action.url)
@@ -235,6 +291,7 @@ class Actor:
         budget_state: Mapping[str, Any],
         actor_memory: Sequence[str] | None = None,
         post_url_aliases: Mapping[str, Sequence[str]] | None = None,
+        available_actions: Sequence[str] | None = None,
     ) -> ActorRun:
         messages, combined_prompt = self._build_messages(
             post=post,
@@ -243,6 +300,7 @@ class Actor:
             history=history,
             budget_state=budget_state,
             actor_memory=actor_memory,
+            available_actions=available_actions,
         )
 
         response_format: dict[str, Any] | None = None
@@ -251,7 +309,7 @@ class Actor:
                 "type": "json_schema",
                 "json_schema": {
                     "name": "actor-decision",
-                    "schema": ActorDecision.model_json_schema(),
+                    "schema": self._build_response_schema(available_actions),
                 },
             }
 
@@ -266,11 +324,12 @@ class Actor:
         generation.text = repair_json(generation.text)
 
         decision = self._parse_raw_output(generation.text)
-        decision = self._validate_decision(
-            decision,
-            history,
-            post_url_aliases=post_url_aliases,
-        )
+        # decision = self._validate_decision(
+        #     decision,
+        #     history,
+        #     post_url_aliases=post_url_aliases,
+        #     available_actions=available_actions,
+        # )
 
         return ActorRun(
             decision=decision,
@@ -288,6 +347,7 @@ class Actor:
         budget_state: Mapping[str, Any],
         actor_memory: Sequence[str] | None = None,
         post_url_aliases: Mapping[str, Sequence[str]] | None = None,
+        available_actions: Sequence[str] | None = None,
     ) -> ActorDecision:
         return self.act_run(
             post=post,
@@ -297,4 +357,101 @@ class Actor:
             budget_state=budget_state,
             actor_memory=actor_memory,
             post_url_aliases=post_url_aliases,
+            available_actions=available_actions,
         ).decision
+    
+    def _build_write_refinement_messages(
+        self,
+        *,
+        original_text: str,
+        support: Sequence[dict[str, Any]],
+        max_text_chars: int,
+        previous_failures: Sequence[dict[str, Any]] | None = None,
+    ) -> tuple[list[dict[str, str]], str]:
+        system_prompt = build_write_refinement_system_prompt()
+        user_prompt = build_write_refinement_user_prompt(
+            original_text=original_text,
+            support=support,
+            max_text_chars=max_text_chars,
+            previous_failures=previous_failures,
+        )
+
+        combined_prompt = (
+            f"[SYSTEM]\n{system_prompt}\n\n"
+            f"[USER]\n{user_prompt}"
+        )
+
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        return messages, combined_prompt
+
+    def _parse_write_refinement_output(
+        self,
+        raw_output: str,
+    ) -> WriteRefinementOutput:
+        try:
+            return WriteRefinementOutput.model_validate_json(raw_output)
+        except (ValidationError, json.JSONDecodeError):
+            pass
+
+        extracted = _extract_json_object(raw_output)
+
+        try:
+            parsed = json.loads(extracted)
+        except json.JSONDecodeError as exc:
+            raise ActorError(
+                f"Write refinement output is not valid JSON. Error: {exc}"
+            ) from exc
+
+        try:
+            return WriteRefinementOutput.model_validate(parsed)
+        except ValidationError as exc:
+            raise ActorError(
+                f"Write refinement output does not match schema: {exc}"
+            ) from exc
+
+    def refine_write_run(
+        self,
+        *,
+        original_text: str,
+        support: Sequence[dict[str, Any]],
+        max_text_chars: int,
+        previous_failures: Sequence[dict[str, Any]] | None = None,
+    ) -> WriteRefinementRun:
+        messages, combined_prompt = self._build_write_refinement_messages(
+            original_text=original_text,
+            support=support,
+            max_text_chars=max_text_chars,
+            previous_failures=previous_failures,
+        )
+
+        response_format: dict[str, Any] | None = None
+        if self.use_json_mode:
+            response_format = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "write-refinement",
+                    "schema": WriteRefinementOutput.model_json_schema(),
+                },
+            }
+
+        generation = self.chat_client.chat(
+            messages=messages,
+            model=self.model,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            response_format=response_format,
+        )
+
+        output = self._parse_write_refinement_output(generation.text)
+
+        if re.search(r"https?://|www\.", output.text):
+            raise ActorError("Refined write text must not contain URLs.")
+
+        return WriteRefinementRun(
+            output=output,
+            prompt=combined_prompt,
+            raw_output=generation.text,
+        )

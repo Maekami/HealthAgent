@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any, Optional, Protocol
 
@@ -38,6 +39,9 @@ class FirecrawlCrawlEngine:
         scrape_timeout_ms: int = 60_000,
         proxy: str = "auto",
         store_in_cache: bool = False,
+        max_retries: int = 3,
+        retry_backoff_s: float = 1.0,
+        max_backoff_s: float = 8.0,
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
@@ -48,6 +52,9 @@ class FirecrawlCrawlEngine:
         self.scrape_timeout_ms = scrape_timeout_ms
         self.proxy = proxy
         self.store_in_cache = store_in_cache
+        self.max_retries = max_retries
+        self.retry_backoff_s = retry_backoff_s
+        self.max_backoff_s = max_backoff_s
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -55,31 +62,70 @@ class FirecrawlCrawlEngine:
             "Content-Type": "application/json",
         }
 
-    def _payload(self, url: str, *, proxy: Optional[str] = None) -> dict[str, Any]:
+    def _payload(self, url: str) -> dict[str, Any]:
         return {
             "url": url,
             "formats": self.formats,
             "onlyMainContent": self.only_main_content,
             "waitFor": self.wait_for_ms,
             "timeout": self.scrape_timeout_ms,
-            "proxy": proxy if proxy is not None else self.proxy,
+            "proxy": self.proxy,
             "storeInCache": self.store_in_cache,
         }
 
-    def _has_captcha_title(self, data: dict[str, Any]) -> bool:
-        metadata = data.get("metadata") or {}
-        if not isinstance(metadata, dict):
-            return False
+    def _compute_backoff(self, attempt_idx: int) -> float:
+        """
+        Exponential backoff:
+        attempt 1 -> base
+        attempt 2 -> base * 2
+        attempt 3 -> base * 4
+        ...
+        """
+        delay = self.retry_backoff_s * (2 ** (attempt_idx - 1))
+        return min(delay, self.max_backoff_s)
 
-        title = metadata.get("title")
-        if not isinstance(title, str):
-            return False
+    def _build_fallback_result(
+        self,
+        url: str,
+        errors: list[str],
+    ) -> FirecrawlScrapeResult:
+        normalized_url = canonicalize_url(url)
 
-        return "captcha" in title.lower()
+        error_block = (
+            "\n".join(f"- {err}" for err in errors[-self.max_retries :])
+            if errors
+            else "- Unknown error"
+        )
 
-    def scrape_raw(self, url: str, *, proxy: Optional[str] = None) -> dict[str, Any]:
+        fallback_markdown = (
+            "Unable to extract content from this URL after multiple attempts. "
+            "Please try another URL.\n\n"
+            f"Target URL: {normalized_url or url}\n\n"
+            f"Recent errors:\n{error_block}"
+        )
+
+        return FirecrawlScrapeResult(
+            url=normalized_url or url,
+            markdown=fallback_markdown,
+            html=None,
+            raw_html=None,
+            links=[],
+            metadata={
+                "title": "Content extraction failed",
+                "url": normalized_url or url,
+                "extraction_failed": True,
+                "error_count": len(errors),
+            },
+            raw_response={
+                "success": False,
+                "fallback": True,
+                "errors": errors,
+            },
+        )
+
+    def scrape_raw(self, url: str) -> dict[str, Any]:
         endpoint = f"{self.base_url}/v2/scrape"
-        payload = self._payload(url, proxy=proxy)
+        payload = self._payload(url)
 
         with httpx.Client(timeout=self.timeout_s) as client:
             resp = client.post(
@@ -101,35 +147,42 @@ class FirecrawlCrawlEngine:
 
         return data
 
-    def _to_scrape_result(self, url: str, raw: dict[str, Any]) -> FirecrawlScrapeResult:
-        if not raw.get("success", False):
-            raise HTTPToolError("Firecrawl scrape returned success=false", response_body=raw)
-
-        data = raw.get("data") or {}
-        if not isinstance(data, dict):
-            raise HTTPToolError("Firecrawl scrape 'data' field is missing or invalid", response_body=raw)
-
-        return FirecrawlScrapeResult(
-            url=canonicalize_url(data.get("metadata", {}).get("url") or url),
-            markdown=data.get("markdown"),
-            html=data.get("html"),
-            raw_html=data.get("rawHtml"),
-            links=list(data.get("links") or []),
-            metadata=dict(data.get("metadata") or {}),
-            raw_response=raw,
-        )
-
     def crawl(self, url: str) -> FirecrawlScrapeResult:
-        # First attempt with the configured/default proxy.
-        raw = self.scrape_raw(url, proxy=self.proxy)
+        errors: list[str] = []
+        attempts = max(self.max_retries, 1)
 
-        data = raw.get("data") or {}
-        if (
-            isinstance(data, dict)
-            and self._has_captcha_title(data)
-            and self.proxy != "stealth"
-        ):
-            # Retry once with stealth proxy if CAPTCHA page is detected.
-            raw = self.scrape_raw(url, proxy="stealth")
+        for attempt_idx in range(1, attempts + 1):
+            try:
+                raw = self.scrape_raw(url)
 
-        return self._to_scrape_result(url, raw)
+                if not raw.get("success", False):
+                    raise HTTPToolError(
+                        "Firecrawl scrape returned success=false",
+                        response_body=raw,
+                    )
+
+                data = raw.get("data") or {}
+                if not isinstance(data, dict):
+                    raise HTTPToolError(
+                        "Firecrawl scrape 'data' field is missing or invalid",
+                        response_body=raw,
+                    )
+
+                return FirecrawlScrapeResult(
+                    url=canonicalize_url(data.get("metadata", {}).get("url") or url),
+                    markdown=data.get("markdown"),
+                    html=data.get("html"),
+                    raw_html=data.get("rawHtml"),
+                    links=list(data.get("links") or []),
+                    metadata=dict(data.get("metadata") or {}),
+                    raw_response=raw,
+                )
+
+            except Exception as exc:
+                errors.append(f"attempt {attempt_idx}: {type(exc).__name__}: {exc}")
+
+                if attempt_idx < attempts:
+                    time.sleep(self._compute_backoff(attempt_idx))
+                    continue
+
+        return self._build_fallback_result(url, errors)

@@ -17,6 +17,7 @@ class SearchResultItem(SchemaBase):
 
 class SearchObservation(SchemaBase):
     results: List[SearchResultItem] = Field(default_factory=list)
+    error_message: Optional[str] = None
 
 
 class VisitObservation(SchemaBase):

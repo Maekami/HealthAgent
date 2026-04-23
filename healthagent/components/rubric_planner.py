@@ -57,7 +57,7 @@ class RubricPlanner:
         *,
         model: Optional[str] = None,
         temperature: float = 0.0,
-        max_tokens: int = 700,
+        max_tokens: int = 1024,
         use_json_mode: bool = True,
     ) -> None:
         self.chat_client = chat_client

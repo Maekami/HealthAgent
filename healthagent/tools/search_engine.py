@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from typing import Any, Optional, Protocol, Sequence
 
@@ -59,12 +60,11 @@ class SearchEngine(Protocol):
 
 class SerperSearchEngine:
     """
-    Minimal Serper wrapper.
+    Minimal Serper wrapper with retry + fallback behavior.
 
-    Notes:
-    - `api_key_header` is configurable because the public official docs page for
-      auth/header details was not easy to verify from the public site.
-    - cutoff filtering is implemented exactly following the user-provided payload shape.
+    Fallback behavior:
+    - If all retries fail, return SearchObservation(results=[], error_message=...).
+    - This avoids breaking the whole pipeline while still exposing failure information.
     """
 
     def __init__(
@@ -76,6 +76,9 @@ class SerperSearchEngine:
         timeout_s: float = 30.0,
         num_results: int = 10,
         exclusions: Sequence[str] | None = None,
+        max_retries: int = 3,
+        retry_backoff_s: float = 1.0,
+        max_backoff_s: float = 8.0,
     ) -> None:
         self.api_key = api_key
         self.endpoint = endpoint
@@ -83,6 +86,9 @@ class SerperSearchEngine:
         self.timeout_s = timeout_s
         self.num_results = num_results
         self.exclusions = list(exclusions or [])
+        self.max_retries = max_retries
+        self.retry_backoff_s = retry_backoff_s
+        self.max_backoff_s = max_backoff_s
 
     def _build_payload(self, query: str, created_at_ms: Optional[int]) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -98,6 +104,31 @@ class SerperSearchEngine:
             "Content-Type": "application/json",
             self.api_key_header: self.api_key,
         }
+
+    def _compute_backoff(self, attempt_idx: int) -> float:
+        """
+        Exponential backoff:
+        attempt 1 -> base
+        attempt 2 -> base * 2
+        attempt 3 -> base * 4
+        ...
+        """
+        delay = self.retry_backoff_s * (2 ** (attempt_idx - 1))
+        return min(delay, self.max_backoff_s)
+
+    def _build_fallback_observation(
+        self,
+        query: str,
+        errors: list[str],
+    ) -> SearchObservation:
+        error_message = (
+            f"Search failed after multiple attempts for query: {query}. "
+            f"Recent errors: {' | '.join(errors[-self.max_retries:])}"
+        )
+        return SearchObservation(
+            results=[],
+            error_message=error_message,
+        )
 
     def search_raw(
         self,
@@ -126,14 +157,7 @@ class SerperSearchEngine:
             raise HTTPToolError("Serper response is not a JSON object", response_body=data)
         return data
 
-    def search(
-        self,
-        query: str,
-        *,
-        created_at_ms: Optional[int] = None,
-    ) -> SearchObservation:
-        data = self.search_raw(query, created_at_ms=created_at_ms)
-
+    def _parse_search_response(self, data: dict[str, Any]) -> SearchObservation:
         organic = data.get("organic") or []
         results: list[SearchResultItem] = []
         seen_urls: set[str] = set()
@@ -157,7 +181,6 @@ class SerperSearchEngine:
             if len(results) >= self.num_results:
                 break
 
-        # fallback: if no organic results, try answerBox link if present
         if not results:
             answer_box = data.get("answerBox") or {}
             raw_url = answer_box.get("link") or ""
@@ -173,4 +196,30 @@ class SerperSearchEngine:
                     )
                 )
 
-        return SearchObservation(results=results)
+        return SearchObservation(
+            results=results,
+            error_message=None,
+        )
+
+    def search(
+        self,
+        query: str,
+        *,
+        created_at_ms: Optional[int] = None,
+    ) -> SearchObservation:
+        errors: list[str] = []
+        attempts = max(self.max_retries, 1)
+
+        for attempt_idx in range(1, attempts + 1):
+            try:
+                data = self.search_raw(query, created_at_ms=created_at_ms)
+                return self._parse_search_response(data)
+
+            except Exception as exc:
+                errors.append(f"attempt {attempt_idx}: {type(exc).__name__}: {exc}")
+
+                if attempt_idx < attempts:
+                    time.sleep(self._compute_backoff(attempt_idx))
+                    continue
+
+        return self._build_fallback_observation(query, errors)

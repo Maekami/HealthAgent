@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Literal
+from typing import List, Optional
 
 from pydantic import Field
 
@@ -11,6 +11,7 @@ from .observations import SearchResultItem
 class SearchRecord(SchemaBase):
     query: str
     results: List[SearchResultItem] = Field(default_factory=list)
+    error_message: Optional[str] = None
 
 
 class VisitedPageRecord(SchemaBase):
@@ -18,15 +19,6 @@ class VisitedPageRecord(SchemaBase):
     summary: str
 
 
-class RetryFeedbackRecord(SchemaBase):
-    kind: Literal["write_text_too_long"]
-    attempted_text: str
-    text_length: int
-    max_text_chars: int
-    message: str
-
-
 class CompressedHistory(SchemaBase):
     searches: List[SearchRecord] = Field(default_factory=list)
     visited_pages: List[VisitedPageRecord] = Field(default_factory=list)
-    retry_feedback: List[RetryFeedbackRecord] = Field(default_factory=list)
