@@ -49,10 +49,18 @@ def _history_to_prompt_dict(history: CompressedHistory) -> dict[str, Any]:
         for page in history.visited_pages
     ]
 
-    return {
+    history_dict = {
         "searches": searches,
         "visited_pages": visited_pages,
     }
+
+    if history.retry_feedback:
+        history_dict["retry_feedback"] = [
+            item.model_dump()
+            for item in history.retry_feedback
+        ]
+
+    return history_dict
 
 
 def build_actor_user_prompt(
@@ -97,7 +105,7 @@ def build_actor_user_prompt(
         "Decide the best next step for this post.\n\n"
         "Decision rules:\n"
         "- Choose search if you still need to discover new candidate evidence pages.\n"
-        "- Choose visit if there is a promising candidate URL in search history that should be read next.\n"
+        "- Choose visit if there is a promising candidate URL in search history or in the post URLs that should be read next.\n"
         "- Choose write only if the visited page summaries are sufficient to support a concise final note.\n"
         "- Choose abstain if the evidence is insufficient and the best next step is to stop.\n"
         "- For visit, write a one-sentence goal telling the summary model what to extract.\n"

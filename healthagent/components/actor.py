@@ -22,7 +22,7 @@ from healthagent.schemas import (
 )
 from healthagent.tools import ChatClient
 from healthagent.tools.url_utils import canonicalize_url
-from healthagent.utils.note_formatting import dedupe_support_urls, effective_note_length
+from healthagent.utils.note_formatting import dedupe_support_urls
 
 
 @dataclass(slots=True)
@@ -141,13 +141,49 @@ class Actor:
             if canonicalize_url(item.url)
         }
 
+    def _normalized_post_url_aliases(
+        self,
+        post_url_aliases: Mapping[str, Sequence[str]] | None,
+    ) -> list[set[str]]:
+        alias_groups: list[set[str]] = []
+        for _, aliases in (post_url_aliases or {}).items():
+            group = {
+                canonicalize_url(url)
+                for url in aliases
+                if canonicalize_url(url)
+            }
+            if group:
+                alias_groups.append(group)
+        return alias_groups
+
+    def _allowed_write_urls(
+        self,
+        history: CompressedHistory,
+        post_url_aliases: Mapping[str, Sequence[str]] | None,
+    ) -> set[str]:
+        visited_urls = self._visited_urls_from_history(history)
+        allowed_urls = set(visited_urls)
+
+        for alias_group in self._normalized_post_url_aliases(post_url_aliases):
+            if alias_group & visited_urls:
+                allowed_urls |= alias_group
+
+        return allowed_urls
+
     def _validate_decision(
         self,
         decision: ActorDecision,
         history: CompressedHistory,
+        *,
+        post_url_aliases: Mapping[str, Sequence[str]] | None = None,
     ) -> ActorDecision:
         candidate_urls = self._candidate_urls_from_history(history)
         visited_urls = self._visited_urls_from_history(history)
+        allowed_write_urls = self._allowed_write_urls(history, post_url_aliases)
+
+        # Expand the URLs present in the tweets into the candidate pool
+        for alias_group in self._normalized_post_url_aliases(post_url_aliases):
+            candidate_urls |= alias_group
 
         action = decision.action
 
@@ -155,11 +191,10 @@ class Actor:
             normalized_url = canonicalize_url(action.url)
             if not normalized_url:
                 raise ActorError("Visit action has an empty or invalid URL.")
-            # FIXME:
-            # if normalized_url not in candidate_urls:
-            #     raise ActorError(
-            #         "Visit action URL must come from URLs available in search history."
-            #     )
+            if normalized_url not in candidate_urls:
+                raise ActorError(
+                    "Visit action URL must come from URLs available in search history or post URLs."
+                )
             decision = decision.model_copy(
                 update={
                     "action": action.model_copy(update={"url": normalized_url})
@@ -170,30 +205,17 @@ class Actor:
             if re.search(r"https?://|www\.", action.text):
                 raise ActorError("Write action text must not contain URLs.")
 
-            # if len(action.text) > self.max_text_chars:
-            #     raise ActorError(
-            #         f"Write action text exceeds max length of {self.max_text_chars} characters."
-            #     )
-
             normalized_support = []
             for item in action.support:
                 normalized_url = canonicalize_url(item.url)
-                # if normalized_url not in visited_urls:
-                #     raise ActorError(
-                #         "Write action support URLs must come from previously visited pages."
-                #     )
+                if normalized_url not in allowed_write_urls:
+                    raise ActorError(
+                        "Write action support URLs must come from previously visited pages. "
+                        "For post URLs, short-link and resolved full-form aliases are both allowed."
+                    )
                 normalized_support.append(
                     item.model_copy(update={"url": normalized_url})
                 )
-
-            unique_urls = dedupe_support_urls(normalized_support)
-            platform_len = effective_note_length(action.text, unique_urls)
-
-            # if platform_len > self.max_platform_chars:
-            #     raise ActorError(
-            #         f"Write action exceeds platform limit: effective_length={platform_len}, "
-            #         f"max_allowed={self.max_platform_chars}."
-            #     )
 
             decision = decision.model_copy(
                 update={
@@ -212,6 +234,7 @@ class Actor:
         history: CompressedHistory,
         budget_state: Mapping[str, Any],
         actor_memory: Sequence[str] | None = None,
+        post_url_aliases: Mapping[str, Sequence[str]] | None = None,
     ) -> ActorRun:
         messages, combined_prompt = self._build_messages(
             post=post,
@@ -240,11 +263,14 @@ class Actor:
             response_format=response_format,
         )
 
-        # print(generation.text) # FIXME:
         generation.text = repair_json(generation.text)
 
         decision = self._parse_raw_output(generation.text)
-        decision = self._validate_decision(decision, history)
+        decision = self._validate_decision(
+            decision,
+            history,
+            post_url_aliases=post_url_aliases,
+        )
 
         return ActorRun(
             decision=decision,
@@ -261,6 +287,7 @@ class Actor:
         history: CompressedHistory,
         budget_state: Mapping[str, Any],
         actor_memory: Sequence[str] | None = None,
+        post_url_aliases: Mapping[str, Sequence[str]] | None = None,
     ) -> ActorDecision:
         return self.act_run(
             post=post,
@@ -269,4 +296,5 @@ class Actor:
             history=history,
             budget_state=budget_state,
             actor_memory=actor_memory,
+            post_url_aliases=post_url_aliases,
         ).decision

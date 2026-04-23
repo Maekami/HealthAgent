@@ -55,20 +55,31 @@ class FirecrawlCrawlEngine:
             "Content-Type": "application/json",
         }
 
-    def _payload(self, url: str) -> dict[str, Any]:
+    def _payload(self, url: str, *, proxy: Optional[str] = None) -> dict[str, Any]:
         return {
             "url": url,
             "formats": self.formats,
             "onlyMainContent": self.only_main_content,
             "waitFor": self.wait_for_ms,
             "timeout": self.scrape_timeout_ms,
-            "proxy": self.proxy,
+            "proxy": proxy if proxy is not None else self.proxy,
             "storeInCache": self.store_in_cache,
         }
 
-    def scrape_raw(self, url: str) -> dict[str, Any]:
+    def _has_captcha_title(self, data: dict[str, Any]) -> bool:
+        metadata = data.get("metadata") or {}
+        if not isinstance(metadata, dict):
+            return False
+
+        title = metadata.get("title")
+        if not isinstance(title, str):
+            return False
+
+        return "captcha" in title.lower()
+
+    def scrape_raw(self, url: str, *, proxy: Optional[str] = None) -> dict[str, Any]:
         endpoint = f"{self.base_url}/v2/scrape"
-        payload = self._payload(url)
+        payload = self._payload(url, proxy=proxy)
 
         with httpx.Client(timeout=self.timeout_s) as client:
             resp = client.post(
@@ -90,8 +101,7 @@ class FirecrawlCrawlEngine:
 
         return data
 
-    def crawl(self, url: str) -> FirecrawlScrapeResult:
-        raw = self.scrape_raw(url)
+    def _to_scrape_result(self, url: str, raw: dict[str, Any]) -> FirecrawlScrapeResult:
         if not raw.get("success", False):
             raise HTTPToolError("Firecrawl scrape returned success=false", response_body=raw)
 
@@ -108,3 +118,18 @@ class FirecrawlCrawlEngine:
             metadata=dict(data.get("metadata") or {}),
             raw_response=raw,
         )
+
+    def crawl(self, url: str) -> FirecrawlScrapeResult:
+        # First attempt with the configured/default proxy.
+        raw = self.scrape_raw(url, proxy=self.proxy)
+
+        data = raw.get("data") or {}
+        if (
+            isinstance(data, dict)
+            and self._has_captcha_title(data)
+            and self.proxy != "stealth"
+        ):
+            # Retry once with stealth proxy if CAPTCHA page is detected.
+            raw = self.scrape_raw(url, proxy="stealth")
+
+        return self._to_scrape_result(url, raw)

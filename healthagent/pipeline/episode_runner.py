@@ -24,6 +24,7 @@ from healthagent.utils.note_formatting import (
     effective_note_length,
     render_note_text_with_urls,
 )
+from healthagent.utils.post_urls import build_post_url_aliases
 
 
 @dataclass(slots=True)
@@ -51,9 +52,11 @@ class EpisodeRunner:
         max_steps: int = 6,
         max_searches: int = 3,
         max_visits: int = 4,
+        max_text_chars: int = 270,
         max_platform_chars: int = 280,
         stream_print: bool = False,
         stream_printer: Optional[Callable[[str], None]] = None,
+        post_url_resolve_timeout_s: float = 10.0,
     ) -> None:
         self.planner = planner
         self.actor = actor
@@ -65,9 +68,11 @@ class EpisodeRunner:
         self.max_steps = max_steps
         self.max_searches = max_searches
         self.max_visits = max_visits
+        self.max_text_chars = max_text_chars
         self.max_platform_chars = max_platform_chars
         self.stream_print = stream_print
         self.stream_printer = stream_printer or print
+        self.post_url_resolve_timeout_s = post_url_resolve_timeout_s
 
     def _budget_state(
         self,
@@ -170,6 +175,12 @@ class EpisodeRunner:
         planner_memory: Optional[Sequence[str]] = None,
         actor_memory: Optional[Sequence[str]] = None,
     ) -> EpisodeRun:
+        post_url_aliases = build_post_url_aliases(
+            post,
+            timeout_s=self.post_url_resolve_timeout_s,
+        )
+        self._emit("POST URL ALIASES", post_url_aliases)
+
         planner_run = self.planner.plan_run(
             post=post,
             planner_memory=planner_memory,
@@ -194,10 +205,11 @@ class EpisodeRunner:
 
         used_searches = 0
         used_visits = 0
+        step_idx = 0
 
-        for step_idx in range(self.max_steps):
+        while step_idx < self.max_steps:
             budget_state = self._budget_state(
-                step_idx=step_idx,
+                step_idx=step_idx+1,
                 used_searches=used_searches,
                 used_visits=used_visits,
             )
@@ -211,6 +223,7 @@ class EpisodeRunner:
                 history=history,
                 budget_state=budget_state,
                 actor_memory=actor_memory,
+                post_url_aliases=post_url_aliases,
             )
 
             self._emit(
@@ -264,6 +277,7 @@ class EpisodeRunner:
                         history_after=history.model_dump(),
                     )
                 )
+                step_idx += 1
                 continue
 
             if action.action == "visit":
@@ -323,9 +337,52 @@ class EpisodeRunner:
                         history_after=history.model_dump(),
                     )
                 )
+                step_idx += 1
                 continue
 
             if action.action == "write":
+                text_length = len(action.text)
+
+                if text_length > self.max_text_chars:
+                    history = self.history_builder.update_with_write_text_too_long(
+                        history=history,
+                        attempted_text=action.text,
+                        text_length=text_length,
+                        max_text_chars=self.max_text_chars,
+                    )
+                    self._emit(
+                        "WRITE TEXT TOO LONG - RETRY",
+                        {
+                            "text_length": text_length,
+                            "max_text_chars": self.max_text_chars,
+                            "attempted_text": action.text,
+                        },
+                    )
+                    self._emit(
+                        "UPDATED HISTORY AFTER WRITE RETRY FEEDBACK",
+                        history.model_dump(),
+                    )
+
+                    trace.steps.append(
+                        StepTrace(
+                            step_idx=step_idx,
+                            actor_prompt=actor_run.prompt,
+                            actor_raw_output=actor_run.raw_output,
+                            parsed_action=actor_run.decision.model_dump(),
+                            tool_name="write_retry_feedback",
+                            tool_input={
+                                "attempted_text": action.text,
+                            },
+                            tool_output={
+                                "text_length": text_length,
+                                "max_text_chars": self.max_text_chars,
+                            },
+                            history_before=history_before,
+                            history_after=history.model_dump(),
+                        )
+                    )
+                    continue
+
                 result = self._build_written_result(
                     post_id=post.post_id,
                     text=action.text,
