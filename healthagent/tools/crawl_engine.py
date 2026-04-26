@@ -35,7 +35,7 @@ class FirecrawlCrawlEngine:
         timeout_s: float = 60.0,
         formats: list[str] | None = None,
         only_main_content: bool = True,
-        wait_for_ms: int = 0,
+        wait_for_ms: int = 5000,
         scrape_timeout_ms: int = 60_000,
         proxy: str = "auto",
         store_in_cache: bool = False,
@@ -62,15 +62,21 @@ class FirecrawlCrawlEngine:
             "Content-Type": "application/json",
         }
 
-    def _payload(self, url: str) -> dict[str, Any]:
+    def _payload(
+        self,
+        url: str,
+        *,
+        proxy_override: str | None = None,
+    ) -> dict[str, Any]:
         return {
             "url": url,
             "formats": self.formats,
             "onlyMainContent": self.only_main_content,
             "waitFor": self.wait_for_ms,
             "timeout": self.scrape_timeout_ms,
-            "proxy": self.proxy,
+            "proxy": proxy_override or self.proxy,
             "storeInCache": self.store_in_cache,
+            "maxAge": 172800000
         }
 
     def _compute_backoff(self, attempt_idx: int) -> float:
@@ -84,10 +90,19 @@ class FirecrawlCrawlEngine:
         delay = self.retry_backoff_s * (2 ** (attempt_idx - 1))
         return min(delay, self.max_backoff_s)
 
+    def _title_has_captcha(self, data: dict[str, Any]) -> bool:
+        metadata = data.get("metadata") or {}
+        title = metadata.get("title")
+        if not isinstance(title, str):
+            return False
+        return "captcha" in title.lower()
+
     def _build_fallback_result(
         self,
         url: str,
         errors: list[str],
+        *,
+        used_stealth_retry: bool,
     ) -> FirecrawlScrapeResult:
         normalized_url = canonicalize_url(url)
 
@@ -101,6 +116,7 @@ class FirecrawlCrawlEngine:
             "Unable to extract content from this URL after multiple attempts. "
             "Please try another URL.\n\n"
             f"Target URL: {normalized_url or url}\n\n"
+            f"Used stealth proxy on retry: {used_stealth_retry}\n\n"
             f"Recent errors:\n{error_block}"
         )
 
@@ -115,17 +131,24 @@ class FirecrawlCrawlEngine:
                 "url": normalized_url or url,
                 "extraction_failed": True,
                 "error_count": len(errors),
+                "used_stealth_retry": used_stealth_retry,
             },
             raw_response={
                 "success": False,
                 "fallback": True,
                 "errors": errors,
+                "used_stealth_retry": used_stealth_retry,
             },
         )
 
-    def scrape_raw(self, url: str) -> dict[str, Any]:
+    def scrape_raw(
+        self,
+        url: str,
+        *,
+        proxy_override: str | None = None,
+    ) -> dict[str, Any]:
         endpoint = f"{self.base_url}/v2/scrape"
-        payload = self._payload(url)
+        payload = self._payload(url, proxy_override=proxy_override)
 
         with httpx.Client(timeout=self.timeout_s) as client:
             resp = client.post(
@@ -142,6 +165,7 @@ class FirecrawlCrawlEngine:
             )
 
         data = resp.json()
+        # print(data) # FIXME:
         if not isinstance(data, dict):
             raise HTTPToolError("Firecrawl response is not a JSON object", response_body=data)
 
@@ -150,10 +174,13 @@ class FirecrawlCrawlEngine:
     def crawl(self, url: str) -> FirecrawlScrapeResult:
         errors: list[str] = []
         attempts = max(self.max_retries, 1)
+        force_stealth_on_retry = False
 
         for attempt_idx in range(1, attempts + 1):
+            proxy_override = "stealth" if force_stealth_on_retry else None
+
             try:
-                raw = self.scrape_raw(url)
+                raw = self.scrape_raw(url, proxy_override=proxy_override)
 
                 if not raw.get("success", False):
                     raise HTTPToolError(
@@ -168,6 +195,13 @@ class FirecrawlCrawlEngine:
                         response_body=raw,
                     )
 
+                if self._title_has_captcha(data):
+                    force_stealth_on_retry = True
+                    raise HTTPToolError(
+                        "Firecrawl scrape returned a CAPTCHA page title",
+                        response_body=data,
+                    )
+
                 return FirecrawlScrapeResult(
                     url=canonicalize_url(data.get("metadata", {}).get("url") or url),
                     markdown=data.get("markdown"),
@@ -179,10 +213,17 @@ class FirecrawlCrawlEngine:
                 )
 
             except Exception as exc:
-                errors.append(f"attempt {attempt_idx}: {type(exc).__name__}: {exc}")
+                errors.append(
+                    f"attempt {attempt_idx} (proxy={proxy_override or self.proxy}): "
+                    f"{type(exc).__name__}: {exc}"
+                )
 
                 if attempt_idx < attempts:
                     time.sleep(self._compute_backoff(attempt_idx))
                     continue
 
-        return self._build_fallback_result(url, errors)
+        return self._build_fallback_result(
+            url,
+            errors,
+            used_stealth_retry=force_stealth_on_retry,
+        )

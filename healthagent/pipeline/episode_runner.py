@@ -26,6 +26,7 @@ from healthagent.utils.note_formatting import (
     render_note_text_with_urls,
 )
 from healthagent.utils.post_urls import build_post_url_aliases
+from .write_refinement import run_write_refinement
 
 
 @dataclass(slots=True)
@@ -53,6 +54,8 @@ class EpisodeRunner:
         max_steps: int = 6,
         max_searches: int = 3,
         max_visits: int = 4,
+        min_searches_before_finalize: int = 1,
+        min_visits_before_finalize: int = 1,
         max_text_chars: int = 270,
         max_platform_chars: int = 280,
         max_write_refinement_attempts: int = 5,
@@ -70,12 +73,52 @@ class EpisodeRunner:
         self.max_steps = max_steps
         self.max_searches = max_searches
         self.max_visits = max_visits
+        self.min_searches_before_finalize = min_searches_before_finalize
+        self.min_visits_before_finalize = min_visits_before_finalize
         self.max_text_chars = max_text_chars
         self.max_platform_chars = max_platform_chars
         self.max_write_refinement_attempts = max_write_refinement_attempts
         self.stream_print = stream_print
         self.stream_printer = stream_printer or print
         self.post_url_resolve_timeout_s = post_url_resolve_timeout_s
+    
+    def _finalize_gate_open(
+        self,
+        *,
+        used_searches: int,
+        used_visits: int,
+    ) -> bool:
+        return (
+            used_searches >= self.min_searches_before_finalize
+            and used_visits >= self.min_visits_before_finalize
+        )
+
+    def _available_actions(
+        self,
+        *,
+        step_idx: int,
+        used_searches: int,
+        used_visits: int,
+    ) -> list[str]:
+        search_visit_actions: list[str] = []
+
+        if used_searches < self.max_searches:
+            search_visit_actions.append("search")
+        if used_visits < self.max_visits:
+            search_visit_actions.append("visit")
+
+        finalize_gate_open = self._finalize_gate_open(
+            used_searches=used_searches,
+            used_visits=used_visits,
+        )
+        is_last_step = step_idx >= self.max_steps
+
+        if finalize_gate_open:
+            if is_last_step:
+                return ["write", "abstain"]
+            return search_visit_actions + ["write", "abstain"]
+
+        return search_visit_actions
 
     def _budget_state(
         self,
@@ -90,36 +133,25 @@ class EpisodeRunner:
             used_visits=used_visits,
         )
 
+        finalize_gate_open = self._finalize_gate_open(
+            used_searches=used_searches,
+            used_visits=used_visits,
+        )
+
         return {
             "current_step": step_idx,
             "max_steps": self.max_steps,
             "remaining_steps": max(self.max_steps - step_idx + 1, 0),
             "used_searches": used_searches,
+            "min_searches_before_finalize": self.min_searches_before_finalize,
             "remaining_searches": max(self.max_searches - used_searches, 0),
             "used_visits": used_visits,
+            "min_visits_before_finalize": self.min_visits_before_finalize,
             "remaining_visits": max(self.max_visits - used_visits, 0),
             "available_actions": available_actions,
+            "finalize_gate_open": finalize_gate_open,
             "is_last_step": step_idx >= self.max_steps,
         }
-
-    def _available_actions(
-        self,
-        *,
-        step_idx: int,
-        used_searches: int,
-        used_visits: int,
-    ) -> list[str]:
-        is_last_step = step_idx >= self.max_steps
-        if is_last_step:
-            return ["write", "abstain"]
-
-        actions = []
-        if used_searches < self.max_searches:
-            actions.append("search")
-        if used_visits < self.max_visits:
-            actions.append("visit")
-        actions.extend(["write", "abstain"])
-        return actions
 
     def _emit(self, title: str, payload: Any) -> None:
         if not self.stream_print:
@@ -247,6 +279,27 @@ class EpisodeRunner:
             available_actions = list(budget_state["available_actions"])
             self._emit_step_header(step_idx, budget_state)
 
+            if not available_actions:
+                result = self._build_abstained_result(
+                    post_id=post.post_id,
+                    reason=(
+                        "No available actions remained before the finalize gate opened. "
+                        f"Completed searches: {used_searches}/{self.min_searches_before_finalize}, "
+                        f"completed visits: {used_visits}/{self.min_visits_before_finalize}."
+                    ),
+                )
+                self._emit(
+                    "FINAL ABSTAIN RESULT",
+                    result.model_dump(),
+                )
+                trace.final_output = result.model_dump()
+
+                return EpisodeRun(
+                    result=result,
+                    trace=trace,
+                    final_history=history,
+                )
+
             current_global_rubrics = (
                 list(self.global_rubrics)
                 + build_action_space_rubrics(available_actions)
@@ -272,6 +325,8 @@ class EpisodeRunner:
             action = actor_run.decision.action
             history_before = history.model_dump()
 
+            # FIXME:
+            ################################## search ##################################
             if action.action == "search":
                 if used_searches >= self.max_searches:
                     raise EpisodeRunnerError(
@@ -318,6 +373,8 @@ class EpisodeRunner:
                 step_idx += 1
                 continue
 
+            # FIXME:
+            ################################## visit ##################################
             if action.action == "visit":
                 if used_visits >= self.max_visits:
                     raise EpisodeRunnerError(
@@ -330,6 +387,7 @@ class EpisodeRunner:
                     {
                         "url": scrape_result.url,
                         # "metadata": scrape_result.metadata,
+                        # "raw_response":scrape_result.raw_response,
                     },
                 )
 
@@ -378,123 +436,26 @@ class EpisodeRunner:
                 step_idx += 1
                 continue
 
+            # FIXME:
+            ################################## write ##################################
             if action.action == "write":
-                final_text = action.text
-                final_reason = action.reason
                 support_payload = [item.model_dump() for item in action.support]
 
-                refinement_attempt = 0
-                refinement_failures: list[dict[str, Any]] = []
+                refinement_outcome = run_write_refinement(
+                    actor=self.actor,
+                    initial_text=action.text,
+                    initial_reason=action.reason,
+                    support_payload=support_payload,
+                    max_text_chars=self.max_text_chars,
+                    max_attempts=self.max_write_refinement_attempts,
+                    step_idx=step_idx,
+                    history_snapshot=history_before,
+                    emit=self._emit,
+                )
 
-                while (
-                    len(final_text) > self.max_text_chars
-                    and refinement_attempt < self.max_write_refinement_attempts
-                ):
-                    refinement_attempt += 1
+                trace.steps.extend(refinement_outcome.trace_steps)
 
-                    current_failure_record = {
-                        "attempt": refinement_attempt,
-                        "failure_type": "text_too_long",
-                        "text_length": len(final_text),
-                        "max_text_chars": self.max_text_chars,
-                        "text": final_text,
-                        "reason": final_reason,
-                    }
-                    refinement_failures.append(current_failure_record)
-
-                    self._emit(
-                        "WRITE TEXT TOO LONG - REFINEMENT TRIGGERED",
-                        current_failure_record,
-                    )
-
-                    try:
-                        refinement_run = self.actor.refine_write_run(
-                            original_text=final_text,
-                            support=support_payload,
-                            max_text_chars=self.max_text_chars,
-                            previous_failures=refinement_failures,
-                        )
-
-                        self._emit(
-                            "WRITE REFINEMENT OUTPUT",
-                            {
-                                "text": refinement_run.output.text,
-                                "text_length": len(refinement_run.output.text),
-                                "reason": refinement_run.output.reason,
-                            },
-                        )
-
-                        trace.steps.append(
-                            StepTrace(
-                                step_idx=step_idx,
-                                actor_prompt=refinement_run.prompt,
-                                actor_raw_output=refinement_run.raw_output,
-                                parsed_action={
-                                    "action": "write_refinement",
-                                    "text": refinement_run.output.text,
-                                    "reason": refinement_run.output.reason,
-                                },
-                                tool_name="write_refinement",
-                                tool_input={
-                                    "original_text": final_text,
-                                    "max_text_chars": self.max_text_chars,
-                                    "support": support_payload,
-                                    "previous_failures": refinement_failures,
-                                },
-                                tool_output={
-                                    "refined_text": refinement_run.output.text,
-                                    "reason": refinement_run.output.reason,
-                                    "text_length": len(refinement_run.output.text),
-                                },
-                                history_before=history_before,
-                                history_after=history_before,
-                            )
-                        )
-
-                        final_text = refinement_run.output.text
-                        final_reason = refinement_run.output.reason
-
-                    except Exception as exc:
-                        error_record = {
-                            "attempt": refinement_attempt,
-                            "failure_type": "refinement_error",
-                            "error": f"{type(exc).__name__}: {exc}",
-                            "text_length": len(final_text),
-                            "max_text_chars": self.max_text_chars,
-                            "text": final_text,
-                        }
-                        refinement_failures.append(error_record)
-
-                        self._emit(
-                            "WRITE REFINEMENT ERROR",
-                            error_record,
-                        )
-
-                        trace.steps.append(
-                            StepTrace(
-                                step_idx=step_idx,
-                                actor_prompt="write_refinement_error",
-                                actor_raw_output=str(exc),
-                                parsed_action={
-                                    "action": "write_refinement_error",
-                                    "error": f"{type(exc).__name__}: {exc}",
-                                },
-                                tool_name="write_refinement",
-                                tool_input={
-                                    "original_text": final_text,
-                                    "max_text_chars": self.max_text_chars,
-                                    "support": support_payload,
-                                    "previous_failures": refinement_failures,
-                                },
-                                tool_output={
-                                    "error": f"{type(exc).__name__}: {exc}",
-                                },
-                                history_before=history_before,
-                                history_after=history_before,
-                            )
-                        )
-
-                if len(final_text) > self.max_text_chars:
+                if not refinement_outcome.success:
                     result = self._build_abstained_result(
                         post_id=post.post_id,
                         reason=(
@@ -530,9 +491,9 @@ class EpisodeRunner:
 
                 result = self._build_written_result(
                     post_id=post.post_id,
-                    text=final_text,
+                    text=refinement_outcome.final_text,
                     support=action.support,
-                    reason=final_reason,
+                    reason=refinement_outcome.final_reason,
                 )
                 self._emit(
                     "FINAL WRITTEN RESULT",
@@ -560,6 +521,8 @@ class EpisodeRunner:
                     final_history=history,
                 )
 
+            # FIXME:
+            ################################## abstain ##################################
             if action.action == "abstain":
                 result = self._build_abstained_result(
                     post_id=post.post_id,

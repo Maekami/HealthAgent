@@ -1,3 +1,20 @@
+## Version 1.03
+
+### Enhancements
+
+* **Extracted note refinement into `write_refinement.py`**
+  The note refinement logic has been separated into a dedicated `write_refinement.py` module for cleaner structure and easier maintenance.
+
+* **Minimum action requirements before `write` / `abstain`**
+  Added stricter episode-level controls so that the model must complete at least `x` searches (default: `1`) and `y` visits (default: `1`) before `write` or `abstain` becomes available. This helps prevent unsupported writing and avoids cases where the model writes after searching only, without actually visiting sources.
+
+* **Stealth proxy support in `crawl_engine.py`**
+  Added an optional stealth proxy mode to enhance scraping success rates in restricted environments.
+
+* **Memory module (initial structure)**
+  Implemented the foundational structure of the memory component. Further testing and validation are pending.
+
+
 ## Version 1.02
 
 ### Enhancements
