@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 .vscode
 healthagent/test_script.ipynb
+healthagent/test_script2.ipynb

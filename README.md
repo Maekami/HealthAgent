@@ -1,3 +1,25 @@
+## Version 1.04
+
+### Enhancements
+
+* **Mode judge for episode classification**
+  Added a first-stage `mode judge` to classify each episode into one of three modes:
+
+  * `excellent`
+  * `satisfactory`
+  * `unsatisfactory`
+
+* **Routing-based evolver behavior**
+  Added a second-stage `evolver` that routes learning behavior based on the episode mode:
+
+  * `excellent`: extract at least one memory from planner or actor behavior.
+  * `satisfactory`: provide at least one actor improvement suggestion, with optional planner memory extraction.
+  * `unsatisfactory`: provide at least one planner improvement suggestion; actor behavior is ignored.
+
+* **Planner-first evaluation flow**
+  The evaluation now first checks whether the planner identified the core claim that needed verification. If not, the episode is marked `unsatisfactory`. If yes, the actor’s performance is then evaluated to decide between `satisfactory` and `excellent`.
+
+
 ## Version 1.03
 
 ### Enhancements

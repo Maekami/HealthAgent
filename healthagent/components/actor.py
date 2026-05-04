@@ -321,7 +321,7 @@ class Actor:
             response_format=response_format,
         )
 
-        generation.text = repair_json(generation.text)
+        generation.text = repair_json(generation.text) # FIXME:
 
         decision = self._parse_raw_output(generation.text)
         # decision = self._validate_decision(
@@ -445,6 +445,7 @@ class Actor:
             response_format=response_format,
         )
 
+        generation.text = repair_json(generation.text) # FIXME:
         output = self._parse_write_refinement_output(generation.text)
 
         if re.search(r"https?://|www\.", output.text):

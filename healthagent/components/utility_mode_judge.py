@@ -3,62 +3,59 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Optional, Sequence
-from json_repair import repair_json
+from typing import Any, Literal, Optional
 
 from pydantic import ValidationError
 
-from healthagent.prompts.rubric_planner import (
-    build_rubric_planner_system_prompt,
-    build_rubric_planner_user_prompt,
+from healthagent.prompts.utility_mode_judge import (
+    build_utility_mode_judge_system_prompt,
+    build_utility_mode_judge_user_prompt,
 )
-from healthagent.schemas import InstanceRubrics, PostPackage
+from healthagent.schemas import PostPackage, UtilityModeJudgeOutput
 from healthagent.tools import ChatClient
 
 
+UtilityEpisodeMode = Literal["excellent", "satisfactory", "unsatisfactory"]
+
+
 @dataclass(slots=True)
-class RubricPlannerRun:
-    rubrics: InstanceRubrics
+class UtilityModeJudgeRun:
+    output: UtilityModeJudgeOutput
+    mode: UtilityEpisodeMode
     prompt: str
     raw_output: str
 
 
-class RubricPlannerError(RuntimeError):
-    """Raised when rubric planning fails."""
+class UtilityModeJudgeError(RuntimeError):
+    """Raised when utility mode judging fails."""
 
 
 def _extract_json_object(text: str) -> str:
-    """
-    Best-effort JSON extraction for cases where the model adds stray text.
-    """
     text = text.strip()
 
-    # Fast path: already valid object-looking string
     if text.startswith("{") and text.endswith("}"):
         return text
 
-    # Remove fenced code blocks if present
     fenced_match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, flags=re.DOTALL)
     if fenced_match:
         return fenced_match.group(1).strip()
 
-    # Fallback: grab the first outermost {...} span
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end != -1 and start < end:
         return text[start : end + 1].strip()
 
-    raise RubricPlannerError("Could not extract a JSON object from planner output.")
+    raise UtilityModeJudgeError("Could not extract a JSON object from mode judge output.")
 
 
-class RubricPlanner:
+class UtilityModeJudge:
     def __init__(
         self,
         chat_client: ChatClient,
         *,
         model: Optional[str] = None,
         temperature: float = 0.0,
-        max_tokens: int = 1024,
+        max_tokens: int = 2048,
         use_json_mode: bool = True,
     ) -> None:
         self.chat_client = chat_client
@@ -67,15 +64,27 @@ class RubricPlanner:
         self.max_tokens = max_tokens
         self.use_json_mode = use_json_mode
 
+    def _derive_mode(self, output: UtilityModeJudgeOutput) -> UtilityEpisodeMode:
+        if not output.planner_ok:
+            return "unsatisfactory"
+        if output.actor_ok is False:
+            return "satisfactory"
+        if output.actor_ok is True:
+            return "excellent"
+        raise UtilityModeJudgeError(
+            "Invalid judge output: planner_ok is true but actor_ok is missing."
+        )
+
     def _build_messages(
         self,
+        *,
         post: PostPackage,
-        planner_memory: Sequence[str] | None = None,
+        episode_run,
     ) -> tuple[list[dict[str, str]], str]:
-        system_prompt = build_rubric_planner_system_prompt()
-        user_prompt = build_rubric_planner_user_prompt(
+        system_prompt = build_utility_mode_judge_system_prompt()
+        user_prompt = build_utility_mode_judge_user_prompt(
             post=post,
-            planner_memory=planner_memory,
+            episode_run=episode_run,
         )
 
         combined_prompt = (
@@ -83,18 +92,16 @@ class RubricPlanner:
             f"[USER]\n{user_prompt}"
         )
 
-        messages: list[dict[str, str]] = [
+        messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
         return messages, combined_prompt
 
-    def _parse_raw_output(self, raw_output: str) -> InstanceRubrics:
+    def _parse_raw_output(self, raw_output: str) -> UtilityModeJudgeOutput:
         try:
-            return InstanceRubrics.model_validate_json(raw_output)
-        except ValidationError:
-            pass
-        except json.JSONDecodeError:
+            return UtilityModeJudgeOutput.model_validate_json(raw_output)
+        except (ValidationError, json.JSONDecodeError):
             pass
 
         extracted = _extract_json_object(raw_output)
@@ -102,26 +109,26 @@ class RubricPlanner:
         try:
             parsed = json.loads(extracted)
         except json.JSONDecodeError as exc:
-            raise RubricPlannerError(
-                f"Planner output is not valid JSON. Error: {exc}"
+            raise UtilityModeJudgeError(
+                f"Mode judge output is not valid JSON. Error: {exc}"
             ) from exc
 
         try:
-            return InstanceRubrics.model_validate(parsed)
+            return UtilityModeJudgeOutput.model_validate(parsed)
         except ValidationError as exc:
-            raise RubricPlannerError(
-                f"Planner output does not match InstanceRubrics schema: {exc}"
+            raise UtilityModeJudgeError(
+                f"Mode judge output does not match schema: {exc}"
             ) from exc
 
-    def plan_run(
+    def judge_run(
         self,
-        post: PostPackage,
         *,
-        planner_memory: Sequence[str] | None = None,
-    ) -> RubricPlannerRun:
+        post: PostPackage,
+        episode_run,
+    ) -> UtilityModeJudgeRun:
         messages, combined_prompt = self._build_messages(
             post=post,
-            planner_memory=planner_memory,
+            episode_run=episode_run,
         )
 
         response_format: dict[str, Any] | None = None
@@ -129,8 +136,8 @@ class RubricPlanner:
             response_format = {
                 "type": "json_schema",
                 "json_schema": {
-                    "name": "instance-rubrics",
-                    "schema": InstanceRubrics.model_json_schema(),
+                    "name": "utility-mode-judge-output",
+                    "schema": UtilityModeJudgeOutput.model_json_schema(),
                 },
             }
 
@@ -141,24 +148,24 @@ class RubricPlanner:
             max_tokens=self.max_tokens,
             response_format=response_format,
         )
-        generation.text = repair_json(generation.text) # FIXME:
 
-        rubrics = self._parse_raw_output(generation.text)
-        # rubrics = ""
+        output = self._parse_raw_output(generation.text)
+        mode = self._derive_mode(output)
 
-        return RubricPlannerRun(
-            rubrics=rubrics,
+        return UtilityModeJudgeRun(
+            output=output,
+            mode=mode,
             prompt=combined_prompt,
             raw_output=generation.text,
         )
 
-    def plan(
+    def judge(
         self,
-        post: PostPackage,
         *,
-        planner_memory: Sequence[str] | None = None,
-    ) -> InstanceRubrics:
-        return self.plan_run(
+        post: PostPackage,
+        episode_run,
+    ) -> UtilityEpisodeMode:
+        return self.judge_run(
             post=post,
-            planner_memory=planner_memory,
-        ).rubrics
+            episode_run=episode_run,
+        ).mode

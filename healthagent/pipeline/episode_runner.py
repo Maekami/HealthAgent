@@ -439,6 +439,20 @@ class EpisodeRunner:
             # FIXME:
             ################################## write ##################################
             if action.action == "write":
+                trace.steps.append(
+                    StepTrace(
+                        step_idx=step_idx,
+                        actor_prompt=actor_run.prompt,
+                        actor_raw_output=actor_run.raw_output,
+                        parsed_action=actor_run.decision.model_dump(),
+                        tool_name=None,
+                        tool_input=None,
+                        tool_output=None,
+                        history_before=history_before,
+                        history_after=history_before,
+                    )
+                )
+
                 support_payload = [item.model_dump() for item in action.support]
 
                 refinement_outcome = run_write_refinement(
@@ -467,20 +481,6 @@ class EpisodeRunner:
                         "FINAL ABSTAIN RESULT",
                         result.model_dump(),
                     )
-
-                    trace.steps.append(
-                        StepTrace(
-                            step_idx=step_idx,
-                            actor_prompt=actor_run.prompt,
-                            actor_raw_output=actor_run.raw_output,
-                            parsed_action=actor_run.decision.model_dump(),
-                            tool_name=None,
-                            tool_input=None,
-                            tool_output=None,
-                            history_before=history_before,
-                            history_after=history_before,
-                        )
-                    )
                     trace.final_output = result.model_dump()
 
                     return EpisodeRun(
@@ -498,20 +498,6 @@ class EpisodeRunner:
                 self._emit(
                     "FINAL WRITTEN RESULT",
                     result.model_dump(),
-                )
-
-                trace.steps.append(
-                    StepTrace(
-                        step_idx=step_idx,
-                        actor_prompt=actor_run.prompt,
-                        actor_raw_output=actor_run.raw_output,
-                        parsed_action=actor_run.decision.model_dump(),
-                        tool_name=None,
-                        tool_input=None,
-                        tool_output=None,
-                        history_before=history_before,
-                        history_after=history_before,
-                    )
                 )
                 trace.final_output = result.model_dump()
 

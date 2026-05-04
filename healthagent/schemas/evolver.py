@@ -1,0 +1,236 @@
+from __future__ import annotations
+
+from typing import List, Literal, Optional
+
+from pydantic import Field, field_validator, model_validator
+
+from .base import SchemaBase
+
+
+EpisodeMode = Literal["excellent", "satisfactory", "unsatisfactory"]
+
+
+def _normalize_item(item: str, *, max_len: int = 260) -> str:
+    item = " ".join(item.split()).strip()
+    item = item.lstrip("-*•.0123456789) ]")
+    item = " ".join(item.split()).strip()
+    if len(item) > max_len:
+        item = item[:max_len].rstrip()
+    return item
+
+
+class UtilityModeJudgeOutput(SchemaBase):
+    planner_rationale: str = Field(
+        min_length=1,
+        max_length=1024,
+        description="Why the planner did or did not successfully identify the necessary core claims.",
+    )
+    planner_ok: bool
+    actor_rationale: Optional[str] = Field(
+        default=None,
+        description="Why the actor did or did not successfully complete the task, evaluated only if planner_ok is true.",
+    )
+    actor_ok: Optional[bool] = Field(
+        default=None,
+        description="Whether the actor completed the task, evaluated only if planner_ok is true.",
+    )
+
+    @field_validator("planner_rationale", mode="before")
+    @classmethod
+    def _normalize_planner_rationale(cls, value: str) -> str:
+        if not isinstance(value, str):
+            raise TypeError("Expected a string.")
+        return " ".join(value.split()).strip()
+
+    @field_validator("actor_rationale", mode="before")
+    @classmethod
+    def _normalize_actor_rationale(cls, value):
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise TypeError("Expected a string.")
+        return " ".join(value.split()).strip()
+
+    @model_validator(mode="after")
+    def _validate_actor_fields(self):
+        if self.planner_ok:
+            if self.actor_ok is None:
+                raise ValueError("actor_ok must be provided when planner_ok is true.")
+            if not self.actor_rationale:
+                raise ValueError("actor_rationale must be provided when planner_ok is true.")
+        return self
+
+
+class UtilityEvolverExcellentOutput(SchemaBase):
+    episode_assessment: str = Field(
+        min_length=1,
+        max_length=1024,
+        description="Concise assessment of why the episode was excellent.",
+    )
+    successful_patterns: List[str] = Field(
+        default_factory=list,
+        max_length=4,
+        description="Reusable successful patterns from the episode.",
+    )
+    planner_memory_items: List[str] = Field(
+        default_factory=list,
+        max_length=4,
+        description="Generalizable planning guidance for future episodes.",
+    )
+    actor_memory_items: List[str] = Field(
+        default_factory=list,
+        max_length=4,
+        description="Generalizable execution guidance for future episodes.",
+    )
+
+    @field_validator("episode_assessment", mode="before")
+    @classmethod
+    def _normalize_text(cls, value: str) -> str:
+        if not isinstance(value, str):
+            raise TypeError("Expected a string.")
+        return " ".join(value.split()).strip()
+
+    @field_validator(
+        "successful_patterns",
+        "planner_memory_items",
+        "actor_memory_items",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_lists(cls, value):
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise TypeError("Expected a list of strings.")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            if not isinstance(item, str):
+                raise TypeError("All items must be strings.")
+            item = _normalize_item(item)
+            if not item:
+                continue
+            if item not in seen:
+                normalized.append(item)
+                seen.add(item)
+        return normalized
+
+    @model_validator(mode="after")
+    def _validate_minimum_memory(self):
+        if len(self.planner_memory_items) + len(self.actor_memory_items) < 1:
+            raise ValueError(
+                "Excellent episodes must produce at least one memory item for planner or actor."
+            )
+        return self
+
+
+class UtilityEvolverSatisfactoryOutput(SchemaBase):
+    episode_assessment: str = Field(
+        min_length=1,
+        max_length=1024,
+        description="Concise assessment of why the episode was satisfactory but not excellent.",
+    )
+    actor_improvement_needs: List[str] = Field(
+        default_factory=list,
+        max_length=4,
+        description="High-impact actor-side weaknesses or missed opportunities.",
+    )
+    highest_utility_actor_improvements: List[str] = Field(
+        default_factory=list,
+        max_length=3,
+        description="The most useful actor-side improvements for future episodes.",
+    )
+    actor_memory_items: List[str] = Field(
+        default_factory=list,
+        min_length=1,
+        max_length=4,
+        description="Generalizable actor guidance for future episodes. Must contain at least one item.",
+    )
+    planner_memory_items: List[str] = Field(
+        default_factory=list,
+        max_length=4,
+        description="Optional generalizable planning guidance if there is something worth preserving.",
+    )
+
+    @field_validator("episode_assessment", mode="before")
+    @classmethod
+    def _normalize_text(cls, value: str) -> str:
+        if not isinstance(value, str):
+            raise TypeError("Expected a string.")
+        return " ".join(value.split()).strip()
+
+    @field_validator(
+        "actor_improvement_needs",
+        "highest_utility_actor_improvements",
+        "actor_memory_items",
+        "planner_memory_items",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_lists(cls, value):
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise TypeError("Expected a list of strings.")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            if not isinstance(item, str):
+                raise TypeError("All items must be strings.")
+            item = _normalize_item(item)
+            if not item:
+                continue
+            if item not in seen:
+                normalized.append(item)
+                seen.add(item)
+        return normalized
+
+
+class UtilityEvolverUnsatisfactoryOutput(SchemaBase):
+    episode_assessment: str = Field(
+        min_length=1,
+        max_length=1024,
+        description="Concise assessment of why the planner failed to frame the task properly.",
+    )
+    planner_failure_modes: List[str] = Field(
+        default_factory=list,
+        max_length=4,
+        description="Planner-side failure patterns from this episode.",
+    )
+    planner_memory_items: List[str] = Field(
+        default_factory=list,
+        min_length=1,
+        max_length=4,
+        description="Generalizable planning guidance for future episodes. Must contain at least one item.",
+    )
+
+    @field_validator("episode_assessment", mode="before")
+    @classmethod
+    def _normalize_text(cls, value: str) -> str:
+        if not isinstance(value, str):
+            raise TypeError("Expected a string.")
+        return " ".join(value.split()).strip()
+
+    @field_validator(
+        "planner_failure_modes",
+        "planner_memory_items",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_lists(cls, value):
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise TypeError("Expected a list of strings.")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            if not isinstance(item, str):
+                raise TypeError("All items must be strings.")
+            item = _normalize_item(item)
+            if not item:
+                continue
+            if item not in seen:
+                normalized.append(item)
+                seen.add(item)
+        return normalized
