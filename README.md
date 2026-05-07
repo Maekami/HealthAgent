@@ -1,3 +1,27 @@
+## Version 1.05
+
+### Enhancements
+
+* **Separated actor evaluation into two stages**
+  The previous single `actor_rationale` evaluation is now split into two layers:
+
+  1. Whether the actor completed the minimum required task.
+  2. Whether the result truly meets the `excellent` standard.
+
+* **Refined episode classification logic**
+  The updated decision flow is now:
+
+  * `planner_ok = false` → `unsatisfactory`
+  * `planner_ok = true` and `actor_task_completed = false` → `satisfactory`
+  * `planner_ok = true` and `actor_task_completed = true`:
+
+    * `actor_ok = true` → `excellent`
+    * `actor_ok = false` → `satisfactory`
+
+* **More robust evaluation behavior**
+  The model is now required to first determine whether the actor actually completed the core task before evaluating output quality. This makes the classification process significantly more reliable than relying on a single `actor_rationale`.
+
+
 ## Version 1.04
 
 ### Enhancements

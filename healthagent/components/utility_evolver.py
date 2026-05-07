@@ -4,6 +4,7 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Any, Optional, Union
+from json_repair import repair_json
 
 from pydantic import ValidationError
 
@@ -273,6 +274,8 @@ class UtilityEvolver:
             max_tokens=self.max_tokens,
             response_format=response_format,
         )
+        generation.text = repair_json(generation.text) # FIXME:
+        print(generation.text)
 
         routed_output = self._parse_raw_output(
             generation.text,

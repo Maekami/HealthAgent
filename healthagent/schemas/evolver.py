@@ -26,13 +26,23 @@ class UtilityModeJudgeOutput(SchemaBase):
         description="Why the planner did or did not successfully identify the necessary core claims.",
     )
     planner_ok: bool
-    actor_rationale: Optional[str] = Field(
+
+    actor_task_rationale: Optional[str] = Field(
         default=None,
-        description="Why the actor did or did not successfully complete the task, evaluated only if planner_ok is true.",
+        description="Why the actor did or did not complete the planner-defined task at the minimally good level.",
+    )
+    actor_task_completed: Optional[bool] = Field(
+        default=None,
+        description="Whether the actor completed the planner-defined task at the minimally good level.",
+    )
+
+    actor_excellent_rationale: Optional[str] = Field(
+        default=None,
+        description="Why the actor does or does not meet the stricter excellent standard, evaluated only if actor_task_completed is true.",
     )
     actor_ok: Optional[bool] = Field(
         default=None,
-        description="Whether the actor completed the task, evaluated only if planner_ok is true.",
+        description="Whether the actor meets the stricter excellent standard. This is only evaluated if actor_task_completed is true.",
     )
 
     @field_validator("planner_rationale", mode="before")
@@ -42,9 +52,9 @@ class UtilityModeJudgeOutput(SchemaBase):
             raise TypeError("Expected a string.")
         return " ".join(value.split()).strip()
 
-    @field_validator("actor_rationale", mode="before")
+    @field_validator("actor_task_rationale", "actor_excellent_rationale", mode="before")
     @classmethod
-    def _normalize_actor_rationale(cls, value):
+    def _normalize_optional_rationales(cls, value):
         if value is None:
             return None
         if not isinstance(value, str):
@@ -54,10 +64,25 @@ class UtilityModeJudgeOutput(SchemaBase):
     @model_validator(mode="after")
     def _validate_actor_fields(self):
         if self.planner_ok:
-            if self.actor_ok is None:
-                raise ValueError("actor_ok must be provided when planner_ok is true.")
-            if not self.actor_rationale:
-                raise ValueError("actor_rationale must be provided when planner_ok is true.")
+            if self.actor_task_completed is None:
+                raise ValueError(
+                    "actor_task_completed must be provided when planner_ok is true."
+                )
+            if not self.actor_task_rationale:
+                raise ValueError(
+                    "actor_task_rationale must be provided when planner_ok is true."
+                )
+
+            if self.actor_task_completed:
+                if self.actor_ok is None:
+                    raise ValueError(
+                        "actor_ok must be provided when actor_task_completed is true."
+                    )
+                if not self.actor_excellent_rationale:
+                    raise ValueError(
+                        "actor_excellent_rationale must be provided when actor_task_completed is true."
+                    )
+
         return self
 
 
@@ -132,11 +157,13 @@ class UtilityEvolverSatisfactoryOutput(SchemaBase):
     )
     actor_improvement_needs: List[str] = Field(
         default_factory=list,
+        min_length=1,
         max_length=4,
         description="High-impact actor-side weaknesses or missed opportunities.",
     )
     highest_utility_actor_improvements: List[str] = Field(
         default_factory=list,
+        min_length=1,
         max_length=3,
         description="The most useful actor-side improvements for future episodes.",
     )
@@ -194,6 +221,7 @@ class UtilityEvolverUnsatisfactoryOutput(SchemaBase):
     )
     planner_failure_modes: List[str] = Field(
         default_factory=list,
+        min_length=1,
         max_length=4,
         description="Planner-side failure patterns from this episode.",
     )

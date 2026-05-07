@@ -4,6 +4,7 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Any, Literal, Optional
+from json_repair import repair_json
 
 from pydantic import ValidationError
 
@@ -55,7 +56,7 @@ class UtilityModeJudge:
         *,
         model: Optional[str] = None,
         temperature: float = 0.0,
-        max_tokens: int = 2048,
+        max_tokens: int = 1024,
         use_json_mode: bool = True,
     ) -> None:
         self.chat_client = chat_client
@@ -67,13 +68,14 @@ class UtilityModeJudge:
     def _derive_mode(self, output: UtilityModeJudgeOutput) -> UtilityEpisodeMode:
         if not output.planner_ok:
             return "unsatisfactory"
-        if output.actor_ok is False:
+
+        if not output.actor_task_completed:
             return "satisfactory"
+
         if output.actor_ok is True:
             return "excellent"
-        raise UtilityModeJudgeError(
-            "Invalid judge output: planner_ok is true but actor_ok is missing."
-        )
+
+        return "satisfactory"
 
     def _build_messages(
         self,
@@ -148,6 +150,8 @@ class UtilityModeJudge:
             max_tokens=self.max_tokens,
             response_format=response_format,
         )
+        generation.text = repair_json(generation.text) # FIXME:
+        print(generation.text)
 
         output = self._parse_raw_output(generation.text)
         mode = self._derive_mode(output)
