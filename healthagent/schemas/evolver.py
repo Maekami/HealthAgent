@@ -19,6 +19,31 @@ def _normalize_item(item: str, *, max_len: int = 260) -> str:
     return item
 
 
+class EvolverMemoryItem(SchemaBase):
+    trigger: str = Field(
+        min_length=1,
+        max_length=512,
+        description="A recurring post or evidence pattern where this memory applies.",
+    )
+    rule: str = Field(
+        min_length=1,
+        max_length=512,
+        description="What the planner or actor should do for that pattern.",
+    )
+    why: str = Field(
+        min_length=1,
+        max_length=512,
+        description="Why this pattern matters or why the rule is useful.",
+    )
+
+    @field_validator("trigger", "rule", "why", mode="before")
+    @classmethod
+    def _normalize_fields(cls, value: str) -> str:
+        if not isinstance(value, str):
+            raise TypeError("Expected a string.")
+        return _normalize_item(value)
+
+
 class UtilityModeJudgeOutput(SchemaBase):
     planner_rationale: str = Field(
         min_length=1,
@@ -94,16 +119,19 @@ class UtilityEvolverExcellentOutput(SchemaBase):
     )
     successful_patterns: List[str] = Field(
         default_factory=list,
+        min_length=1,
         max_length=4,
         description="Reusable successful patterns from the episode.",
     )
-    planner_memory_items: List[str] = Field(
+    planner_memory_items: List[EvolverMemoryItem] = Field(
         default_factory=list,
+        min_length=1,
         max_length=4,
         description="Generalizable planning guidance for future episodes.",
     )
-    actor_memory_items: List[str] = Field(
+    actor_memory_items: List[EvolverMemoryItem] = Field(
         default_factory=list,
+        min_length=1,
         max_length=4,
         description="Generalizable execution guidance for future episodes.",
     )
@@ -115,14 +143,9 @@ class UtilityEvolverExcellentOutput(SchemaBase):
             raise TypeError("Expected a string.")
         return " ".join(value.split()).strip()
 
-    @field_validator(
-        "successful_patterns",
-        "planner_memory_items",
-        "actor_memory_items",
-        mode="before",
-    )
+    @field_validator("successful_patterns", mode="before")
     @classmethod
-    def _normalize_lists(cls, value):
+    def _normalize_successful_patterns(cls, value):
         if value is None:
             return []
         if not isinstance(value, list):
@@ -167,13 +190,13 @@ class UtilityEvolverSatisfactoryOutput(SchemaBase):
         max_length=3,
         description="The most useful actor-side improvements for future episodes.",
     )
-    actor_memory_items: List[str] = Field(
+    actor_memory_items: List[EvolverMemoryItem] = Field(
         default_factory=list,
         min_length=1,
         max_length=4,
         description="Generalizable actor guidance for future episodes. Must contain at least one item.",
     )
-    planner_memory_items: List[str] = Field(
+    planner_memory_items: List[EvolverMemoryItem] = Field(
         default_factory=list,
         max_length=4,
         description="Optional generalizable planning guidance if there is something worth preserving.",
@@ -189,8 +212,6 @@ class UtilityEvolverSatisfactoryOutput(SchemaBase):
     @field_validator(
         "actor_improvement_needs",
         "highest_utility_actor_improvements",
-        "actor_memory_items",
-        "planner_memory_items",
         mode="before",
     )
     @classmethod
@@ -225,7 +246,7 @@ class UtilityEvolverUnsatisfactoryOutput(SchemaBase):
         max_length=4,
         description="Planner-side failure patterns from this episode.",
     )
-    planner_memory_items: List[str] = Field(
+    planner_memory_items: List[EvolverMemoryItem] = Field(
         default_factory=list,
         min_length=1,
         max_length=4,
@@ -239,11 +260,7 @@ class UtilityEvolverUnsatisfactoryOutput(SchemaBase):
             raise TypeError("Expected a string.")
         return " ".join(value.split()).strip()
 
-    @field_validator(
-        "planner_failure_modes",
-        "planner_memory_items",
-        mode="before",
-    )
+    @field_validator("planner_failure_modes", mode="before")
     @classmethod
     def _normalize_lists(cls, value):
         if value is None:

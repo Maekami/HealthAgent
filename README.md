@@ -1,3 +1,35 @@
+## Version 1.06
+
+### Enhancements
+
+* **Conditioned memory strategy**
+  Memories are now narrowed to specific tweet archetypes or topics, shifting from generic writing advice to conditional strategy rules.
+
+* **New memory schema**
+  Memory entries now use the following structure:
+
+  ```json
+  {
+    "scope": "planner | actor",
+    "trigger": "...",
+    "rule": "...",
+    "why": "..."
+  }
+  ```
+
+* **Summary-model-based memory retrieval**
+  Both planner and actor now use a summary model to generate memory retrieval queries. This reuses the summary model from the `visit` workflow with a separate dedicated prompt.
+
+* **Pipeline integration**
+  The updated memory structure and retrieval flow have been integrated into the main pipeline.
+
+* **Decoupled episode and self-evolving modules**
+  Episode execution and self-evolving logic are now separated, making it easier to retry individual components.
+
+* **Debug sink support**
+  Added a debug sink that can output `emit` logs to a specified file path for easier system analysis.
+
+
 ## Version 1.05
 
 ### Enhancements

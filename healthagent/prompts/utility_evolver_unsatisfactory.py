@@ -15,8 +15,9 @@ def build_utility_evolver_unsatisfactory_system_prompt() -> str:
     return (
         "You are a routed utility evolver for a self-improving evidence-backed note-writing system.\n"
         "This episode has been classified as unsatisfactory because the planner did not complete its task.\n"
-        "Your job is to focus only on planner-side improvements.\n"
-        "Do not derive actor guidance from this episode, because the task framing itself was insufficient.\n"
+        "Focus only on planner-side improvements.\n"
+        "Avoid generic writing advice and avoid entity-specific advice.\n"
+        "Each memory item should apply to a recurring class of posts or evidence situations.\n"
         "Return valid JSON only."
     )
 
@@ -30,13 +31,17 @@ def build_utility_evolver_unsatisfactory_user_prompt(
     output_schema = UtilityEvolverUnsatisfactoryOutput.model_json_schema()
 
     return (
-        "Analyze this completed episode and extract planner-oriented lessons.\n\n"
+        "Produce reusable planner memory from this episode.\n\n"
+        "For each memory item:\n"
+        "- trigger: say when this memory should apply\n"
+        "- rule: say what the planner should do\n"
+        "- why: say why this helps\n"
+        "- avoid universal advice like 'identify the right claim'\n"
+        "- avoid entity-specific advice like 'for Covishield posts'\n"
+        "- target a recurring class of health misinformation posts or evidence situations\n\n"
         "Requirements:\n"
-        "- Focus only on planner-side failure modes and improvements.\n"
-        "- planner_memory_items must contain at least one reusable planning lesson.\n"
-        "- Do not derive actor guidance from this episode.\n"
-        "- Prefer high-impact, reusable lessons over exhaustive criticism.\n"
-        "- Each list item must be plain text with no leading bullets, numbering, or punctuation.\n"
+        "- planner_memory_items must contain at least one item\n"
+        "- do not derive actor guidance from this episode\n"
         "- Return JSON only, with no markdown fence and no extra commentary.\n\n"
         f"Mode judgment:\n{json.dumps(judge_output.model_dump(), ensure_ascii=False, indent=2)}\n\n"
         f"Episode data:\n{json.dumps(episode_to_prompt_dict(post, episode_run), ensure_ascii=False, indent=2)}\n\n"

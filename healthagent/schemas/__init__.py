@@ -20,6 +20,7 @@ from .evolver import (
     UtilityEvolverUnsatisfactoryOutput,
     UtilityModeJudgeOutput,
 )
+from .memory_query import MemoryQueryOutput
 
 __all__ = [
     "AbstainAction",
@@ -34,6 +35,7 @@ __all__ = [
     "FinalNote",
     "ImageTextView",
     "InstanceRubrics",
+    "MemoryQueryOutput",
     "PostPackage",
     "SearchAction",
     "SearchObservation",

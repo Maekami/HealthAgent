@@ -34,9 +34,6 @@ def tokenize(text: str) -> list[str]:
 
 
 def lexical_overlap_score(query: str, candidate: str) -> float:
-    """
-    Lightweight lexical scorer for MVP memory retrieval.
-    """
     q_tokens = set(tokenize(query))
     c_tokens = set(tokenize(candidate))
 
@@ -47,22 +44,28 @@ def lexical_overlap_score(query: str, candidate: str) -> float:
     if overlap == 0:
         return 0.0
 
-    # slightly favor dense overlap while penalizing overly long candidate text
     return overlap / math.sqrt(len(c_tokens))
 
 
 class MemoryRecord(SchemaBase):
     record_id: str = Field(default_factory=lambda: str(uuid4()))
     scope: MemoryScope
-    text: str
-    tags: list[str] = Field(default_factory=list)
+    trigger: str
+    rule: str
+    why: str
     source: str = "manual"
     priority: float = 1.0
     created_at: datetime = Field(default_factory=_utc_now)
 
     def searchable_text(self) -> str:
-        tag_text = " ".join(self.tags)
-        return normalize_text(f"{self.text} {tag_text}")
+        return normalize_text(f"{self.trigger} {self.rule} {self.why}")
+
+    def to_prompt_text(self) -> str:
+        return (
+            f"Trigger: {normalize_text(self.trigger)}\n"
+            f"Rule: {normalize_text(self.rule)}\n"
+            f"Why: {normalize_text(self.why)}"
+        )
 
 
 class BaseMemoryStore(ABC):
@@ -98,13 +101,6 @@ class InMemoryStore(BaseMemoryStore):
 
 
 class JsonlMemoryStore(BaseMemoryStore):
-    """
-    Simple append-only JSONL memory store.
-
-    Good enough for manual seeding now, and later can be used by a self-evolving
-    memory writer without changing the retrieval interface.
-    """
-
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -142,7 +138,12 @@ class JsonlMemoryStore(BaseMemoryStore):
 
 class BasePlannerMemory(ABC):
     @abstractmethod
-    def retrieve(self, post: PostPackage) -> list[str]:
+    def retrieve(
+        self,
+        *,
+        post: PostPackage,
+        query: str | None = None,
+    ) -> list[str]:
         raise NotImplementedError
 
 
@@ -150,24 +151,33 @@ class BaseActorMemory(ABC):
     @abstractmethod
     def retrieve(
         self,
+        *,
         post: PostPackage,
         history: CompressedHistory,
         instance_rubrics: InstanceRubrics,
+        query: str | None = None,
     ) -> list[str]:
         raise NotImplementedError
 
 
 class EmptyPlannerMemory(BasePlannerMemory):
-    def retrieve(self, post: PostPackage) -> list[str]:
+    def retrieve(
+        self,
+        *,
+        post: PostPackage,
+        query: str | None = None,
+    ) -> list[str]:
         return []
 
 
 class EmptyActorMemory(BaseActorMemory):
     def retrieve(
         self,
+        *,
         post: PostPackage,
         history: CompressedHistory,
         instance_rubrics: InstanceRubrics,
+        query: str | None = None,
     ) -> list[str]:
         return []
 
@@ -214,4 +224,4 @@ class LexicalMemoryMixin:
         return [record for _, record in scored[: self.top_k]]
 
     def _records_to_texts(self, records: Iterable[MemoryRecord]) -> list[str]:
-        return [record.text for record in records]
+        return [record.to_prompt_text() for record in records]

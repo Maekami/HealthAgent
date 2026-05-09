@@ -182,6 +182,23 @@ class UtilityEvolver:
                 f"Utility evolver output does not match schema: {exc}"
             ) from exc
 
+    def _memory_item_to_record(
+        self,
+        *,
+        scope: str,
+        item,
+        mode: UtilityEpisodeMode,
+        priority: float,
+    ) -> MemoryRecord:
+        return MemoryRecord(
+            scope=scope,
+            trigger=item.trigger,
+            rule=item.rule,
+            why=item.why,
+            source="utility_evolver",
+            priority=priority,
+        )
+
     def _build_records(
         self,
         routed_output: RoutedEvolverOutput,
@@ -190,59 +207,54 @@ class UtilityEvolver:
     ) -> tuple[list[MemoryRecord], list[MemoryRecord]]:
         if mode == "unsatisfactory":
             planner_records = [
-                MemoryRecord(
+                self._memory_item_to_record(
                     scope="planner",
-                    text=text,
-                    tags=["utility_evolver", "planner", mode],
-                    source="utility_evolver",
+                    item=item,
+                    mode=mode,
                     priority=self.planner_priority,
                 )
-                for text in routed_output.planner_memory_items
+                for item in routed_output.planner_memory_items
             ]
             return planner_records, []
 
         if mode == "satisfactory":
             planner_records = [
-                MemoryRecord(
+                self._memory_item_to_record(
                     scope="planner",
-                    text=text,
-                    tags=["utility_evolver", "planner", mode],
-                    source="utility_evolver",
+                    item=item,
+                    mode=mode,
                     priority=self.planner_priority,
                 )
-                for text in routed_output.planner_memory_items
+                for item in routed_output.planner_memory_items
             ]
             actor_records = [
-                MemoryRecord(
+                self._memory_item_to_record(
                     scope="actor",
-                    text=text,
-                    tags=["utility_evolver", "actor", mode],
-                    source="utility_evolver",
+                    item=item,
+                    mode=mode,
                     priority=self.actor_priority,
                 )
-                for text in routed_output.actor_memory_items
+                for item in routed_output.actor_memory_items
             ]
             return planner_records, actor_records
 
         planner_records = [
-            MemoryRecord(
+            self._memory_item_to_record(
                 scope="planner",
-                text=text,
-                tags=["utility_evolver", "planner", mode],
-                source="utility_evolver",
+                item=item,
+                mode=mode,
                 priority=self.planner_priority,
             )
-            for text in routed_output.planner_memory_items
+            for item in routed_output.planner_memory_items
         ]
         actor_records = [
-            MemoryRecord(
+            self._memory_item_to_record(
                 scope="actor",
-                text=text,
-                tags=["utility_evolver", "actor", mode],
-                source="utility_evolver",
+                item=item,
+                mode=mode,
                 priority=self.actor_priority,
             )
-            for text in routed_output.actor_memory_items
+            for item in routed_output.actor_memory_items
         ]
         return planner_records, actor_records
 
@@ -275,7 +287,7 @@ class UtilityEvolver:
             response_format=response_format,
         )
         generation.text = repair_json(generation.text) # FIXME:
-        print(generation.text)
+        # print(generation.text)
 
         routed_output = self._parse_raw_output(
             generation.text,

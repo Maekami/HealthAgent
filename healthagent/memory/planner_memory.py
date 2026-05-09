@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from healthagent.schemas import PostPackage
 
 from .base import (
+    BaseMemoryStore,
     BasePlannerMemory,
+    EmptyPlannerMemory,
     LexicalMemoryMixin,
     MemoryRecord,
     MemoryScope,
-    BaseMemoryStore,
-    EmptyPlannerMemory,
     normalize_text,
 )
 
@@ -39,14 +39,6 @@ def _post_to_planner_query(post: PostPackage) -> str:
 
 
 class SimplePlannerMemory(LexicalMemoryMixin, BasePlannerMemory):
-    """
-    Minimal retrieval-only planner memory.
-
-    Intended use cases:
-    - manually seeded heuristics
-    - future self-evolving summaries that help rubric planning
-    """
-
     def __init__(
         self,
         store: BaseMemoryStore,
@@ -58,33 +50,41 @@ class SimplePlannerMemory(LexicalMemoryMixin, BasePlannerMemory):
         super().__init__(store, top_k=top_k, min_score=min_score)
         self.scopes = list(scopes)
 
-    def retrieve(self, post: PostPackage) -> list[str]:
-        query = _post_to_planner_query(post)
+    def retrieve(
+        self,
+        *,
+        post: PostPackage,
+        query: str | None = None,
+    ) -> list[str]:
+        effective_query = normalize_text(query or _post_to_planner_query(post))
         records = self._retrieve_records(
-            query=query,
+            query=effective_query,
             scopes=self.scopes,
         )
         return self._records_to_texts(records)
 
 
 def build_planner_memory_records(
-    texts: Sequence[str],
+    items: Sequence[Mapping[str, str]],
     *,
-    tags: Sequence[str] | None = None,
     scope: MemoryScope = "planner",
     source: str = "manual",
     priority: float = 1.0,
 ) -> list[MemoryRecord]:
     records: list[MemoryRecord] = []
-    for text in texts:
-        text = normalize_text(text)
-        if not text:
+    for item in items:
+        trigger = normalize_text(item.get("trigger", ""))
+        rule = normalize_text(item.get("rule", ""))
+        why = normalize_text(item.get("why", ""))
+        if not trigger or not rule or not why:
             continue
+
         records.append(
             MemoryRecord(
                 scope=scope,
-                text=text,
-                tags=list(tags or []),
+                trigger=trigger,
+                rule=rule,
+                why=why,
                 source=source,
                 priority=priority,
             )

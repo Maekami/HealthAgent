@@ -151,7 +151,7 @@ class UtilityModeJudge:
             response_format=response_format,
         )
         generation.text = repair_json(generation.text) # FIXME:
-        print(generation.text)
+        # print(generation.text)
 
         output = self._parse_raw_output(generation.text)
         mode = self._derive_mode(output)

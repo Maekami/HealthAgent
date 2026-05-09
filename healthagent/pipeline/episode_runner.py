@@ -6,7 +6,14 @@ from typing import Any, Callable, Optional, Sequence
 
 from healthagent.components.actor import Actor
 from healthagent.components.history_builder import HistoryBuilder
+from healthagent.components.memory_query_builder import MemoryQueryBuilder
 from healthagent.components.rubric_planner import RubricPlanner
+from healthagent.memory import (
+    BaseActorMemory,
+    BasePlannerMemory,
+    EmptyActorMemory,
+    EmptyPlannerMemory,
+)
 from healthagent.prompts.global_rubrics import build_action_space_rubrics
 from healthagent.schemas import (
     AbstainDecision,
@@ -27,6 +34,7 @@ from healthagent.utils.note_formatting import (
 )
 from healthagent.utils.post_urls import build_post_url_aliases
 from .write_refinement import run_write_refinement
+from healthagent.utils.debug_sink import DebugSink
 
 
 @dataclass(slots=True)
@@ -51,6 +59,9 @@ class EpisodeRunner:
         crawl_engine: CrawlEngine,
         summary_model: GoalConditionedSummaryModel,
         global_rubrics: Sequence[str],
+        planner_memory_retriever: BasePlannerMemory | None = None,
+        actor_memory_retriever: BaseActorMemory | None = None,
+        memory_query_builder: MemoryQueryBuilder | None = None,
         max_steps: int = 6,
         max_searches: int = 3,
         max_visits: int = 4,
@@ -62,6 +73,8 @@ class EpisodeRunner:
         stream_print: bool = False,
         stream_printer: Optional[Callable[[str], None]] = None,
         post_url_resolve_timeout_s: float = 10.0,
+        debug_sink: DebugSink | None = None,
+        sample_key: str | None = None,
     ) -> None:
         self.planner = planner
         self.actor = actor
@@ -70,6 +83,11 @@ class EpisodeRunner:
         self.crawl_engine = crawl_engine
         self.summary_model = summary_model
         self.global_rubrics = list(global_rubrics)
+
+        self.planner_memory_retriever = planner_memory_retriever or EmptyPlannerMemory()
+        self.actor_memory_retriever = actor_memory_retriever or EmptyActorMemory()
+        self.memory_query_builder = memory_query_builder
+
         self.max_steps = max_steps
         self.max_searches = max_searches
         self.max_visits = max_visits
@@ -81,7 +99,10 @@ class EpisodeRunner:
         self.stream_print = stream_print
         self.stream_printer = stream_printer or print
         self.post_url_resolve_timeout_s = post_url_resolve_timeout_s
-    
+        
+        self.debug_sink = debug_sink
+        self.sample_key = sample_key
+
     def _finalize_gate_open(
         self,
         *,
@@ -153,14 +174,25 @@ class EpisodeRunner:
             "is_last_step": step_idx >= self.max_steps,
         }
 
+    def _format_emit_body(self, payload: Any) -> str:
+        if isinstance(payload, str):
+            return payload
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+
     def _emit(self, title: str, payload: Any) -> None:
+        body = self._format_emit_body(payload)
+
+        if self.debug_sink is not None:
+            self.debug_sink.emit(
+                title=title,
+                payload=payload,   # Original structured data, suitable for saving in JSONL format
+                rendered=body,     # Formatted text, convenient for saving as txt
+                sample_key=self.sample_key,
+                stage="episode",
+            )
+
         if not self.stream_print:
             return
-
-        if isinstance(payload, str):
-            body = payload
-        else:
-            body = json.dumps(payload, ensure_ascii=False, indent=2)
 
         self.stream_printer(f"\n===== {title} =====\n{body}\n")
 
@@ -177,6 +209,97 @@ class EpisodeRunner:
             + json.dumps(budget_state, ensure_ascii=False, indent=2)
             + "\n"
         )
+
+    def _resolve_planner_memory(
+        self,
+        *,
+        post: PostPackage,
+        planner_memory: Sequence[str] | None,
+    ) -> list[str]:
+        if planner_memory is not None:
+            resolved = list(planner_memory)
+            self._emit("PLANNER MEMORY OVERRIDE", resolved)
+            return resolved
+
+        query: str | None = None
+        if self.memory_query_builder is not None:
+            query_run = self.memory_query_builder.build_planner_query_run(
+                post=post,
+            )
+            self._emit("PLANNER MEMORY QUERY", query_run.output.model_dump())
+            query = query_run.output.query
+
+        resolved = self.planner_memory_retriever.retrieve(
+            post=post,
+            query=query,
+        )
+        self._emit("RESOLVED PLANNER MEMORY", resolved)
+        return resolved
+
+    def _resolve_actor_memory(
+        self,
+        *,
+        post: PostPackage,
+        history: CompressedHistory,
+        instance_rubrics,
+        budget_state: dict[str, Any],
+        actor_memory: Sequence[str] | None,
+    ) -> list[str]:
+        if actor_memory is not None:
+            resolved = list(actor_memory)
+            self._emit("ACTOR MEMORY OVERRIDE", resolved)
+            return resolved
+
+        query: str | None = None
+        if self.memory_query_builder is not None:
+            query_run = self.memory_query_builder.build_actor_query_run(
+                post=post,
+                instance_rubrics=instance_rubrics,
+                history=history,
+                budget_state=budget_state,
+            )
+            self._emit("ACTOR MEMORY QUERY", query_run.output.model_dump())
+            query = query_run.output.query
+
+        resolved = self.actor_memory_retriever.retrieve(
+            post=post,
+            history=history,
+            instance_rubrics=instance_rubrics,
+            query=query,
+        )
+        self._emit("RESOLVED ACTOR MEMORY", resolved)
+        return resolved
+
+    def _refinement_max_text_chars_from_support(
+        self,
+        support: Sequence[Any],
+    ) -> int:
+        """
+        When refinement is triggered, dynamically relax/tighten the text budget
+        based on the number of unique reference URLs in the initial note.
+
+        Formula:
+            max_text_chars = max_platform_chars - url_count
+        """
+        unique_urls: set[str] = set()
+
+        for item in support:
+            url = None
+            if isinstance(item, dict):
+                url = item.get("url")
+            else:
+                url = getattr(item, "url", None)
+
+            if isinstance(url, str):
+                url = url.strip()
+                if url:
+                    unique_urls.add(url)
+
+        dynamic_limit = self.max_platform_chars - len(unique_urls)
+
+        # Safety clamp: refinement limit should never be negative, and should not
+        # exceed the platform limit.
+        return max(0, min(dynamic_limit, self.max_platform_chars))
 
     def _build_written_result(
         self,
@@ -237,15 +360,26 @@ class EpisodeRunner:
         planner_memory: Optional[Sequence[str]] = None,
         actor_memory: Optional[Sequence[str]] = None,
     ) -> EpisodeRun:
+        
+        self._emit(
+            "INPUT POST",
+            post.model_dump(),
+        )       
+
         post_url_aliases = build_post_url_aliases(
             post,
             timeout_s=self.post_url_resolve_timeout_s,
         )
         self._emit("POST URL ALIASES", post_url_aliases)
 
-        planner_run = self.planner.plan_run(
+        resolved_planner_memory = self._resolve_planner_memory(
             post=post,
             planner_memory=planner_memory,
+        )
+
+        planner_run = self.planner.plan_run(
+            post=post,
+            planner_memory=resolved_planner_memory,
         )
 
         self._emit(
@@ -306,13 +440,21 @@ class EpisodeRunner:
             )
             self._emit("CURRENT GLOBAL RUBRICS", current_global_rubrics)
 
+            resolved_actor_memory = self._resolve_actor_memory(
+                post=post,
+                history=history,
+                instance_rubrics=planner_run.rubrics,
+                budget_state=budget_state,
+                actor_memory=actor_memory,
+            )
+
             actor_run = self.actor.act_run(
                 post=post,
                 global_rubrics=current_global_rubrics,
                 instance_rubrics=planner_run.rubrics,
                 history=history,
                 budget_state=budget_state,
-                actor_memory=actor_memory,
+                actor_memory=resolved_actor_memory,
                 post_url_aliases=post_url_aliases,
                 available_actions=available_actions,
             )
@@ -454,13 +596,26 @@ class EpisodeRunner:
                 )
 
                 support_payload = [item.model_dump() for item in action.support]
+                refinement_max_text_chars = self._refinement_max_text_chars_from_support(
+                    action.support
+                )
+
+                self._emit(
+                    "WRITE REFINEMENT BUDGET",
+                    {
+                        "default_max_text_chars": self.max_text_chars,
+                        "max_platform_chars": self.max_platform_chars,
+                        "reference_url_count": len({item.url for item in action.support}),
+                        "applied_refinement_max_text_chars": refinement_max_text_chars,
+                    },
+                )
 
                 refinement_outcome = run_write_refinement(
                     actor=self.actor,
                     initial_text=action.text,
                     initial_reason=action.reason,
                     support_payload=support_payload,
-                    max_text_chars=self.max_text_chars,
+                    max_text_chars=refinement_max_text_chars,
                     max_attempts=self.max_write_refinement_attempts,
                     step_idx=step_idx,
                     history_snapshot=history_before,
@@ -470,11 +625,13 @@ class EpisodeRunner:
                 trace.steps.extend(refinement_outcome.trace_steps)
 
                 if not refinement_outcome.success:
+                    raise EpisodeRunnerError("Unable to compress the note text")
+                
                     result = self._build_abstained_result(
                         post_id=post.post_id,
                         reason=(
-                            "Unable to compress the note text to fit the text length limit "
-                            "after focused refinement."
+                            "Unable to compress the note text to fit the refinement text length limit "
+                            f"({refinement_outcome.applied_max_text_chars}) after focused refinement."
                         ),
                     )
                     self._emit(
@@ -510,6 +667,9 @@ class EpisodeRunner:
             # FIXME:
             ################################## abstain ##################################
             if action.action == "abstain":
+                # FIXME:
+                raise EpisodeRunnerError("Call abstain")
+
                 result = self._build_abstained_result(
                     post_id=post.post_id,
                     reason=action.reason,

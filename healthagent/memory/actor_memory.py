@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from healthagent.schemas import CompressedHistory, InstanceRubrics, PostPackage
 
 from .base import (
     BaseActorMemory,
+    BaseMemoryStore,
+    EmptyActorMemory,
     LexicalMemoryMixin,
     MemoryRecord,
     MemoryScope,
-    BaseMemoryStore,
-    EmptyActorMemory,
     normalize_text,
 )
 
@@ -43,14 +43,6 @@ def _post_to_actor_query(
 
 
 class SimpleActorMemory(LexicalMemoryMixin, BaseActorMemory):
-    """
-    Minimal retrieval-only actor memory.
-
-    Intended use cases:
-    - manually seeded search/visit/write heuristics
-    - future self-evolving execution guidance
-    """
-
     def __init__(
         self,
         store: BaseMemoryStore,
@@ -64,36 +56,43 @@ class SimpleActorMemory(LexicalMemoryMixin, BaseActorMemory):
 
     def retrieve(
         self,
+        *,
         post: PostPackage,
         history: CompressedHistory,
         instance_rubrics: InstanceRubrics,
+        query: str | None = None,
     ) -> list[str]:
-        query = _post_to_actor_query(post, history, instance_rubrics)
+        effective_query = normalize_text(
+            query or _post_to_actor_query(post, history, instance_rubrics)
+        )
         records = self._retrieve_records(
-            query=query,
+            query=effective_query,
             scopes=self.scopes,
         )
         return self._records_to_texts(records)
 
 
 def build_actor_memory_records(
-    texts: Sequence[str],
+    items: Sequence[Mapping[str, str]],
     *,
-    tags: Sequence[str] | None = None,
     scope: MemoryScope = "actor",
     source: str = "manual",
     priority: float = 1.0,
 ) -> list[MemoryRecord]:
     records: list[MemoryRecord] = []
-    for text in texts:
-        text = normalize_text(text)
-        if not text:
+    for item in items:
+        trigger = normalize_text(item.get("trigger", ""))
+        rule = normalize_text(item.get("rule", ""))
+        why = normalize_text(item.get("why", ""))
+        if not trigger or not rule or not why:
             continue
+
         records.append(
             MemoryRecord(
                 scope=scope,
-                text=text,
-                tags=list(tags or []),
+                trigger=trigger,
+                rule=rule,
+                why=why,
                 source=source,
                 priority=priority,
             )

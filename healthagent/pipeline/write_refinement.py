@@ -16,6 +16,7 @@ class WriteRefinementOutcome:
     success: bool
     trace_steps: list[StepTrace]
     failure_records: list[dict[str, Any]]
+    applied_max_text_chars: int
 
 
 def _noop_emit(title: str, payload: Any) -> None:
@@ -145,4 +146,5 @@ def run_write_refinement(
         success=len(final_text) <= max_text_chars,
         trace_steps=trace_steps,
         failure_records=refinement_failures,
+        applied_max_text_chars=max_text_chars,
     )
