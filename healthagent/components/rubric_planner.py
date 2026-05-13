@@ -4,20 +4,21 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Any, Optional, Sequence
-from json_repair import repair_json
 
+from json_repair import repair_json
 from pydantic import ValidationError
 
 from healthagent.prompts.rubric_planner import (
     build_rubric_planner_system_prompt,
     build_rubric_planner_user_prompt,
 )
-from healthagent.schemas import InstanceRubrics, PostPackage
+from healthagent.schemas import InstanceRubrics, PostPackage, RubricPlannerOutput
 from healthagent.tools import ChatClient
 
 
 @dataclass(slots=True)
 class RubricPlannerRun:
+    output: RubricPlannerOutput
     rubrics: InstanceRubrics
     prompt: str
     raw_output: str
@@ -28,21 +29,15 @@ class RubricPlannerError(RuntimeError):
 
 
 def _extract_json_object(text: str) -> str:
-    """
-    Best-effort JSON extraction for cases where the model adds stray text.
-    """
     text = text.strip()
 
-    # Fast path: already valid object-looking string
     if text.startswith("{") and text.endswith("}"):
         return text
 
-    # Remove fenced code blocks if present
     fenced_match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, flags=re.DOTALL)
     if fenced_match:
         return fenced_match.group(1).strip()
 
-    # Fallback: grab the first outermost {...} span
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end != -1 and start < end:
@@ -77,21 +72,19 @@ class RubricPlanner:
             post=post,
             planner_memory=planner_memory,
         )
-
         combined_prompt = (
             f"[SYSTEM]\n{system_prompt}\n\n"
             f"[USER]\n{user_prompt}"
         )
-
         messages: list[dict[str, str]] = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
         return messages, combined_prompt
 
-    def _parse_raw_output(self, raw_output: str) -> InstanceRubrics:
+    def _parse_raw_output(self, raw_output: str) -> RubricPlannerOutput:
         try:
-            return InstanceRubrics.model_validate_json(raw_output)
+            return RubricPlannerOutput.model_validate_json(raw_output)
         except ValidationError:
             pass
         except json.JSONDecodeError:
@@ -107,10 +100,10 @@ class RubricPlanner:
             ) from exc
 
         try:
-            return InstanceRubrics.model_validate(parsed)
+            return RubricPlannerOutput.model_validate(parsed)
         except ValidationError as exc:
             raise RubricPlannerError(
-                f"Planner output does not match InstanceRubrics schema: {exc}"
+                f"Planner output does not match RubricPlannerOutput schema: {exc}"
             ) from exc
 
     def plan_run(
@@ -129,8 +122,8 @@ class RubricPlanner:
             response_format = {
                 "type": "json_schema",
                 "json_schema": {
-                    "name": "instance-rubrics",
-                    "schema": InstanceRubrics.model_json_schema(),
+                    "name": "rubric-planner-output",
+                    "schema": RubricPlannerOutput.model_json_schema(),
                 },
             }
 
@@ -141,13 +134,13 @@ class RubricPlanner:
             max_tokens=self.max_tokens,
             response_format=response_format,
         )
-        generation.text = repair_json(generation.text) # FIXME:
 
-        rubrics = self._parse_raw_output(generation.text)
-        # rubrics = ""
+        generation.text = repair_json(generation.text)
+        output = self._parse_raw_output(generation.text)
 
         return RubricPlannerRun(
-            rubrics=rubrics,
+            output=output,
+            rubrics=output.rubrics,
             prompt=combined_prompt,
             raw_output=generation.text,
         )

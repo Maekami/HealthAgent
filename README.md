@@ -1,3 +1,11 @@
+## Version 1.07
+
+### Enhancements
+
+* **Memory reflection for planner and actor**
+  Added a `memory_reflection` field to both planner and actor outputs. This allows the model to explicitly review retrieved memories and determine whether they contain useful guidance for the next action.
+
+
 ## Version 1.06
 
 ### Enhancements

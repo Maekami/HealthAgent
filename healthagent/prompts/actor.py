@@ -125,6 +125,7 @@ def build_actor_user_prompt(
     output_schema = {
         "thinking": {
             "current_assessment": "Short summary of what is already known from prior searches/visits.",
+            "memory_reflection": "Short statement of whether any retrieved actor memory is useful right now and how it affects the next action. If none is useful, say so briefly.",
             "main_gap": "Short statement of the key missing information or unresolved issue.",
             "decision_rationale": "Short statement of why the chosen action is the best next step.",
         },
@@ -133,6 +134,17 @@ def build_actor_user_prompt(
 
     return (
         "Decide the best next step for this post.\n\n"
+        "Thinking order:\n"
+        "1. current_assessment\n"
+        "2. memory_reflection\n"
+        "3. main_gap\n"
+        "4. decision_rationale\n\n"
+        "Rules for memory_reflection:\n"
+        "- Keep it short and specific.\n"
+        "- Explicitly assess whether any retrieved actor memory is useful right now.\n"
+        "- If useful, say what kind of guidance matters for the next action.\n"
+        "- If not useful, say that no retrieved memory is currently helpful.\n"
+        "- Do not ignore retrieved memory silently.\n\n"
         f"Available actions for this step:\n{json.dumps(allowed_actions, ensure_ascii=False, indent=2)}\n\n"
         f"Global rubrics:\n{json.dumps(list(global_rubrics), ensure_ascii=False, indent=2)}\n\n"
         f"Actor memory:\n{memory_block}\n\n"
@@ -142,6 +154,7 @@ def build_actor_user_prompt(
         f"Budget state:\n{json.dumps(dict(budget_state), ensure_ascii=False, indent=2)}\n\n"
         f"Output schema:\n{json.dumps(output_schema, ensure_ascii=False, indent=2)}"
     )
+
 
 def build_write_refinement_system_prompt() -> str:
     return (

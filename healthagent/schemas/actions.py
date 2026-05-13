@@ -46,18 +46,6 @@ class VisitAction(SchemaBase):
         return " ".join(value.split()).strip()
 
 
-# class WriteAction(SchemaBase):
-#     action: Literal["write"]
-#     note: str
-#     support: List[ClaimSupport] = Field(default_factory=list)
-#     reason: str
-
-#     @field_validator("note", "reason", mode="before")
-#     @classmethod
-#     def _normalize_text(cls, value: str) -> str:
-#         if not isinstance(value, str):
-#             raise TypeError("Expected a string.")
-#         return " ".join(value.split()).strip()
 class WriteAction(SchemaBase):
     action: Literal["write"]
     text: str
@@ -96,9 +84,14 @@ class ActorThinking(SchemaBase):
         max_length=512,
         description="Concise summary of the current evidence state.",
     )
+    memory_reflection: str = Field(
+        min_length=1,
+        max_length=512,
+        description="Short reflection on whether retrieved actor memory is useful for the next action.",
+    )
     main_gap: str = Field(
         min_length=1,
-        max_length=256,
+        max_length=512,
         description="The main missing piece or unresolved issue.",
     )
     decision_rationale: str = Field(
@@ -109,6 +102,7 @@ class ActorThinking(SchemaBase):
 
     @field_validator(
         "current_assessment",
+        "memory_reflection",
         "main_gap",
         "decision_rationale",
         mode="before",

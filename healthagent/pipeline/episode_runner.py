@@ -383,8 +383,13 @@ class EpisodeRunner:
         )
 
         self._emit(
-            "PLANNER RUBRICS",
-            planner_run.rubrics.model_dump(),
+            "PLANNER CURRENT ASSESSMENT", planner_run.output.current_assessment,
+        )
+        self._emit(
+            "PLANNER MEMORY REFLECTION", planner_run.output.memory_reflection,
+        )
+        self._emit(
+            "PLANNER RUBRICS", planner_run.rubrics.model_dump(),
         )
 
         history = CompressedHistory()
@@ -394,7 +399,7 @@ class EpisodeRunner:
             post_id=post.post_id,
             planner_prompt=planner_run.prompt,
             planner_raw_output=planner_run.raw_output,
-            planner_parsed_output=planner_run.rubrics.model_dump(),
+            planner_parsed_output=planner_run.output.model_dump(),
             steps=[],
             final_output={},
         )
@@ -460,8 +465,11 @@ class EpisodeRunner:
             )
 
             self._emit(
-                "ACTOR DECISION",
-                actor_run.decision.model_dump(),
+                "ACTOR MEMORY REFLECTION",
+                actor_run.decision.thinking.memory_reflection,
+            )
+            self._emit(
+                "ACTOR DECISION", actor_run.decision.model_dump(),
             )
 
             action = actor_run.decision.action
@@ -596,6 +604,10 @@ class EpisodeRunner:
                 )
 
                 support_payload = [item.model_dump() for item in action.support]
+
+                if len(action.support) == 0:
+                    raise EpisodeRunnerError("No support urls")
+
                 refinement_max_text_chars = self._refinement_max_text_chars_from_support(
                     action.support
                 )
