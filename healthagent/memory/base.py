@@ -5,13 +5,14 @@ import re
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Literal, Optional, Sequence
+from typing import Iterable, Literal, Sequence
 from uuid import uuid4
 
 from pydantic import Field
 
 from healthagent.schemas import CompressedHistory, InstanceRubrics, PostPackage
 from healthagent.schemas.base import SchemaBase
+from healthagent.schemas.memory_query import MemoryStage
 
 
 MemoryScope = Literal["planner", "actor", "shared"]
@@ -50,6 +51,7 @@ def lexical_overlap_score(query: str, candidate: str) -> float:
 class MemoryRecord(SchemaBase):
     record_id: str = Field(default_factory=lambda: str(uuid4()))
     scope: MemoryScope
+    stage: MemoryStage = "core_task_incomplete"
     trigger: str
     rule: str
     why: str
@@ -57,10 +59,15 @@ class MemoryRecord(SchemaBase):
     priority: float = 1.0
     created_at: datetime = Field(default_factory=_utc_now)
 
+    def trigger_text(self) -> str:
+        return normalize_text(self.trigger)
+
     def searchable_text(self) -> str:
-        return normalize_text(f"{self.trigger} {self.rule} {self.why}")
+        # Retrieval intentionally aligns query only to trigger granularity.
+        return self.trigger_text()
 
     def to_prompt_text(self) -> str:
+        # stage is used only for retrieval filtering / auditing, not prompt display
         return (
             f"Trigger: {normalize_text(self.trigger)}\n"
             f"Rule: {normalize_text(self.rule)}\n"
@@ -143,6 +150,7 @@ class BasePlannerMemory(ABC):
         *,
         post: PostPackage,
         query: str | None = None,
+        stage: MemoryStage | None = None,
     ) -> list[str]:
         raise NotImplementedError
 
@@ -156,6 +164,7 @@ class BaseActorMemory(ABC):
         history: CompressedHistory,
         instance_rubrics: InstanceRubrics,
         query: str | None = None,
+        stage: MemoryStage | None = None,
     ) -> list[str]:
         raise NotImplementedError
 
@@ -166,6 +175,7 @@ class EmptyPlannerMemory(BasePlannerMemory):
         *,
         post: PostPackage,
         query: str | None = None,
+        stage: MemoryStage | None = None,
     ) -> list[str]:
         return []
 
@@ -178,6 +188,7 @@ class EmptyActorMemory(BaseActorMemory):
         history: CompressedHistory,
         instance_rubrics: InstanceRubrics,
         query: str | None = None,
+        stage: MemoryStage | None = None,
     ) -> list[str]:
         return []
 
@@ -199,12 +210,15 @@ class LexicalMemoryMixin:
         *,
         query: str,
         scopes: Sequence[MemoryScope],
+        stage: MemoryStage | None = None,
     ) -> list[MemoryRecord]:
         query = normalize_text(query)
         if not query:
             return []
 
         records = self.store.list_records(scopes=scopes)
+        if stage is not None:
+            records = [record for record in records if record.stage == stage]
 
         scored: list[tuple[float, MemoryRecord]] = []
         for record in records:

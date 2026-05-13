@@ -222,16 +222,19 @@ class EpisodeRunner:
             return resolved
 
         query: str | None = None
+        stage = None
         if self.memory_query_builder is not None:
             query_run = self.memory_query_builder.build_planner_query_run(
                 post=post,
             )
             self._emit("PLANNER MEMORY QUERY", query_run.output.model_dump())
             query = query_run.output.query
+            stage = query_run.output.stage
 
         resolved = self.planner_memory_retriever.retrieve(
             post=post,
             query=query,
+            stage=stage,
         )
         self._emit("RESOLVED PLANNER MEMORY", resolved)
         return resolved
@@ -251,6 +254,7 @@ class EpisodeRunner:
             return resolved
 
         query: str | None = None
+        stage = None
         if self.memory_query_builder is not None:
             query_run = self.memory_query_builder.build_actor_query_run(
                 post=post,
@@ -260,12 +264,14 @@ class EpisodeRunner:
             )
             self._emit("ACTOR MEMORY QUERY", query_run.output.model_dump())
             query = query_run.output.query
+            stage = query_run.output.stage
 
         resolved = self.actor_memory_retriever.retrieve(
             post=post,
             history=history,
             instance_rubrics=instance_rubrics,
             query=query,
+            stage=stage,
         )
         self._emit("RESOLVED ACTOR MEMORY", resolved)
         return resolved

@@ -1,3 +1,39 @@
+## Version 1.08
+
+### Enhancements
+
+* **Post-type-based memory queries**
+  Memory retrieval queries now focus only on identifying the recurring post type or claim archetype, rather than mixing in sample-specific facts, unresolved evidence gaps, or note quality issues.
+
+* **Separated episode state into `stage`**
+  Current progress is now represented separately through `stage`, such as `core_task_incomplete` or `core_task_complete`, keeping retrieval cleaner and more structured.
+
+* **Updated memory query schema**
+  `MemoryQueryOutput` now follows:
+
+  ```python
+  query
+  stage
+  rationale
+  ```
+
+* **Updated evolver memory schema**
+  `EvolverMemoryItem` now follows:
+
+  ```python
+  trigger
+  stage
+  rule
+  why
+  ```
+
+* **Cleaner memory prompt format**
+  Retrieved memories shown to planner or actor now include only `Trigger`, `Rule`, and `Why`. The `stage` field is used for filtering, debugging, and audit only.
+
+* **Stricter prompt constraints**
+  Added stronger prompt rules and examples so that both `query` and `trigger` describe reusable post archetypes, usually starting with `post ...`, instead of current-note weaknesses or sample-specific details.
+
+
 ## Version 1.07
 
 ### Enhancements

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Mapping, Sequence
 
 from healthagent.schemas import CompressedHistory, InstanceRubrics, PostPackage
+from healthagent.schemas.memory_query import MemoryStage
 
 from .base import (
     BaseActorMemory,
@@ -21,6 +22,7 @@ def _post_to_actor_query(
     instance_rubrics: InstanceRubrics,
 ) -> str:
     chunks: list[str] = [post.tweet_text]
+    chunks.extend(post.caption.values())
 
     chunks.extend(instance_rubrics.core_checkworthy_claims)
     chunks.extend(instance_rubrics.priority_questions)
@@ -61,13 +63,17 @@ class SimpleActorMemory(LexicalMemoryMixin, BaseActorMemory):
         history: CompressedHistory,
         instance_rubrics: InstanceRubrics,
         query: str | None = None,
+        stage: MemoryStage | None = None,
     ) -> list[str]:
         effective_query = normalize_text(
             query or _post_to_actor_query(post, history, instance_rubrics)
         )
+        effective_stage = stage or "core_task_incomplete"
+
         records = self._retrieve_records(
             query=effective_query,
             scopes=self.scopes,
+            stage=effective_stage,
         )
         return self._records_to_texts(records)
 
@@ -78,18 +84,21 @@ def build_actor_memory_records(
     scope: MemoryScope = "actor",
     source: str = "manual",
     priority: float = 1.0,
+    default_stage: MemoryStage = "core_task_incomplete",
 ) -> list[MemoryRecord]:
     records: list[MemoryRecord] = []
     for item in items:
         trigger = normalize_text(item.get("trigger", ""))
         rule = normalize_text(item.get("rule", ""))
         why = normalize_text(item.get("why", ""))
+        stage = item.get("stage") or default_stage
         if not trigger or not rule or not why:
             continue
 
         records.append(
             MemoryRecord(
                 scope=scope,
+                stage=stage,
                 trigger=trigger,
                 rule=rule,
                 why=why,

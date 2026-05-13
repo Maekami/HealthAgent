@@ -115,6 +115,7 @@ class UtilityEvolver:
                 episode_run=episode_run,
                 judge_output=judge_run.output,
             )
+            # print(user_prompt) # FIXME:
         else:
             system_prompt = build_utility_evolver_unsatisfactory_system_prompt()
             user_prompt = build_utility_evolver_unsatisfactory_user_prompt(
@@ -187,7 +188,6 @@ class UtilityEvolver:
         *,
         scope: str,
         item,
-        mode: UtilityEpisodeMode,
         priority: float,
     ) -> MemoryRecord:
         return MemoryRecord(
@@ -195,6 +195,7 @@ class UtilityEvolver:
             trigger=item.trigger,
             rule=item.rule,
             why=item.why,
+            stage=item.stage,
             source="utility_evolver",
             priority=priority,
         )
@@ -210,7 +211,6 @@ class UtilityEvolver:
                 self._memory_item_to_record(
                     scope="planner",
                     item=item,
-                    mode=mode,
                     priority=self.planner_priority,
                 )
                 for item in routed_output.planner_memory_items
@@ -222,7 +222,6 @@ class UtilityEvolver:
                 self._memory_item_to_record(
                     scope="planner",
                     item=item,
-                    mode=mode,
                     priority=self.planner_priority,
                 )
                 for item in routed_output.planner_memory_items
@@ -231,7 +230,6 @@ class UtilityEvolver:
                 self._memory_item_to_record(
                     scope="actor",
                     item=item,
-                    mode=mode,
                     priority=self.actor_priority,
                 )
                 for item in routed_output.actor_memory_items
@@ -242,7 +240,6 @@ class UtilityEvolver:
             self._memory_item_to_record(
                 scope="planner",
                 item=item,
-                mode=mode,
                 priority=self.planner_priority,
             )
             for item in routed_output.planner_memory_items
@@ -251,7 +248,6 @@ class UtilityEvolver:
             self._memory_item_to_record(
                 scope="actor",
                 item=item,
-                mode=mode,
                 priority=self.actor_priority,
             )
             for item in routed_output.actor_memory_items

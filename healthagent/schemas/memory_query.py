@@ -1,22 +1,28 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import Field, field_validator
 
 from .base import SchemaBase
 
 
+MemoryStage = Literal["core_task_incomplete", "core_task_complete"]
+
+
 class MemoryQueryOutput(SchemaBase):
     query: str = Field(
         min_length=1,
         max_length=512,
-        description="A short retrieval query for memory search.",
+        description="A short generalized retrieval query that identifies the post type or claim archetype.",
+    )
+    stage: MemoryStage = Field(
+        description="The current stage for selecting the right memory pool.",
     )
     rationale: Optional[str] = Field(
         default=None,
         max_length=512,
-        description="Optional short explanation of why this query was generated.",
+        description="Short explanation of why this memory query is needed right now.",
     )
 
     @field_validator("query", mode="before")

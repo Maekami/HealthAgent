@@ -13,24 +13,17 @@ _URL_PATTERN = re.compile(r"https?://[^\s<>\"]+")
 
 
 def _collect_text_fields(post: PostPackage) -> List[str]:
-    texts: List[str] = [post.tweet_text]
+    texts: List[str] = []
 
-    for image in post.image_views:
-        if image.caption:
-            texts.append(image.caption)
-        if image.ocr:
-            texts.append(image.ocr)
-        if image.description:
-            texts.append(image.description)
+    if post.tweet_text:
+        texts.append(post.tweet_text)
 
-    for video in post.video_views:
-        if video.transcript:
-            texts.append(video.transcript)
-        if video.ocr:
-            texts.append(video.ocr)
-        if video.temporal_summary:
-            texts.append(video.temporal_summary)
-        texts.extend(video.keyframe_captions)
+    if post.caption:
+        texts.extend(
+            text
+            for text in post.caption.values()
+            if text
+        )
 
     return texts
 
@@ -90,7 +83,11 @@ def build_post_url_aliases(
 
     for raw_url in extract_urls_from_post(post):
         alias_set = resolve_url_aliases(raw_url, timeout_s=timeout_s)
-        alias_set.add(canonicalize_url(raw_url))
+
+        normalized_raw = canonicalize_url(raw_url)
+        if normalized_raw:
+            alias_set.add(normalized_raw)
+
         alias_list = sorted({alias for alias in alias_set if alias})
         aliases[raw_url] = alias_list
 

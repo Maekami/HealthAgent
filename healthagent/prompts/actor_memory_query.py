@@ -11,6 +11,19 @@ from healthagent.schemas import (
 )
 
 
+GOOD_QUERY_EXAMPLES = [
+    "Post uses a recent single health case to imply broader causality",
+    "Post uses a vivid adverse event to generalize intervention risk",
+    "Post uses a linked study or article to support a stronger health claim than the source directly justifies",
+]
+
+BAD_QUERY_EXAMPLES = [
+    "Recent US polio case unvaccinated paralysis causality",
+    "Peter Marks FDA actions pharma favor evidence",
+    "Need to verify the core claims about vaccination status and causality",
+]
+
+
 def _history_to_prompt_dict(history: CompressedHistory) -> dict[str, Any]:
     return {
         "searches": [
@@ -42,9 +55,9 @@ def _history_to_prompt_dict(history: CompressedHistory) -> dict[str, Any]:
 def build_actor_memory_query_system_prompt() -> str:
     return (
         "You generate short retrieval queries for actor memory in a health misinformation note system.\n"
-        "Your job is to summarize the current decision state in a compact query.\n"
-        "Focus on the post pattern, what has already been checked, what still seems missing, and the current action pressure.\n"
-        "Do not write broad universal advice.\n"
+        "Your query must identify a recurring post type or claim archetype.\n"
+        "Current state should be reflected in stage, not in the query itself.\n"
+        "Do not write sample-specific fact queries.\n"
         "Return valid JSON only."
     )
 
@@ -60,17 +73,27 @@ def build_actor_memory_query_user_prompt(
 
     return (
         "Generate a short memory-retrieval query for the actor.\n\n"
-        "The query should capture:\n"
-        "- the recurring post or claim pattern\n"
-        "- what the planner says must be checked\n"
-        "- what has already been searched or visited\n"
-        "- what still seems missing or unresolved\n"
-        "- the current decision pressure (for example whether write is available or whether the step budget is tight)\n\n"
-        "Requirements:\n"
-        "- Keep the query short, specific, and reusable.\n"
-        "- Prefer the current bottleneck over generic restatement.\n"
-        "- Avoid entity-specific wording unless absolutely necessary.\n"
-        "- Return JSON only, with no markdown fence and no extra commentary.\n\n"
+        "Output order:\n"
+        "1. query\n"
+        "2. stage\n"
+        "3. rationale\n\n"
+        "Rules for query:\n"
+        "- query must identify a recurring post type or claim archetype\n"
+        "- query should usually begin with 'Post ...'\n"
+        "- query must be generalized and reusable\n"
+        "- query must not contain sample-specific facts, proper nouns, or unresolved factual details\n"
+        "- current state should be reflected in stage rather than in the query text\n\n"
+        "Rules for stage:\n"
+        "- core_task_incomplete: the planner-defined core task is not yet fully completed\n"
+        "- core_task_complete: the core task is already completed, and the remaining question is whether the note can be improved toward an excellent note\n\n"
+        "Rules for rationale:\n"
+        "- keep it short\n"
+        "- explain why memory for this kind of post is needed now\n"
+        "- do not restate sample-specific missing facts\n\n"
+        "Good query examples:\n"
+        f"{json.dumps(GOOD_QUERY_EXAMPLES, ensure_ascii=False, indent=2)}\n\n"
+        "Bad query examples:\n"
+        f"{json.dumps(BAD_QUERY_EXAMPLES, ensure_ascii=False, indent=2)}\n\n"
         f"Post:\n{json.dumps(post.model_dump(), ensure_ascii=False, indent=2)}\n\n"
         f"Instance rubrics:\n{json.dumps(instance_rubrics.model_dump(), ensure_ascii=False, indent=2)}\n\n"
         f"Compressed history:\n{json.dumps(_history_to_prompt_dict(history), ensure_ascii=False, indent=2)}\n\n"

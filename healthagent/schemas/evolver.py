@@ -5,6 +5,7 @@ from typing import List, Literal, Optional
 from pydantic import Field, field_validator, model_validator
 
 from .base import SchemaBase
+from .memory_query import MemoryStage
 
 
 EpisodeMode = Literal["excellent", "satisfactory", "unsatisfactory"]
@@ -23,17 +24,20 @@ class EvolverMemoryItem(SchemaBase):
     trigger: str = Field(
         min_length=1,
         max_length=512,
-        description="A recurring post or evidence pattern where this memory applies.",
+        description="A generalized recurring post type or claim archetype where this memory applies.",
+    )
+    stage: MemoryStage = Field(
+        description="Which episode stage this memory is meant for.",
     )
     rule: str = Field(
         min_length=1,
         max_length=512,
-        description="What the planner or actor should do for that pattern.",
+        description="What a future planner or actor should do for that post type at this stage, before finalizing.",
     )
     why: str = Field(
         min_length=1,
         max_length=512,
-        description="Why this pattern matters or why the rule is useful.",
+        description="Why this rule helps for that post type.",
     )
 
     @field_validator("trigger", "rule", "why", mode="before")
@@ -180,21 +184,21 @@ class UtilityEvolverSatisfactoryOutput(SchemaBase):
     )
     actor_improvement_needs: List[str] = Field(
         default_factory=list,
-        min_length=1,
+        # min_length=1,
         max_length=4,
         description="High-impact actor-side weaknesses or missed opportunities.",
     )
     highest_utility_actor_improvements: List[str] = Field(
         default_factory=list,
-        min_length=1,
+        # min_length=1,
         max_length=3,
         description="The most useful actor-side improvements for future episodes.",
     )
     actor_memory_items: List[EvolverMemoryItem] = Field(
         default_factory=list,
-        min_length=1,
+        min_length=2,
         max_length=4,
-        description="Generalizable actor guidance for future episodes. Must contain at least one item.",
+        description="Generalizable actor guidance for future episodes. Must include both core_task_incomplete and core_task_complete.",
     )
     planner_memory_items: List[EvolverMemoryItem] = Field(
         default_factory=list,
@@ -232,6 +236,19 @@ class UtilityEvolverSatisfactoryOutput(SchemaBase):
                 normalized.append(item)
                 seen.add(item)
         return normalized
+
+    @model_validator(mode="after")
+    def _validate_actor_memory_stage_coverage(self):
+        stages = {item.stage for item in self.actor_memory_items}
+        if "core_task_incomplete" not in stages:
+            raise ValueError(
+                "Satisfactory actor_memory_items must include at least one core_task_incomplete item."
+            )
+        if "core_task_complete" not in stages:
+            raise ValueError(
+                "Satisfactory actor_memory_items must include at least one core_task_complete item."
+            )
+        return self
 
 
 class UtilityEvolverUnsatisfactoryOutput(SchemaBase):

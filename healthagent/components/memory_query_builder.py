@@ -4,8 +4,8 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
-from json_repair import repair_json
 
+from json_repair import repair_json
 from pydantic import ValidationError
 
 from healthagent.prompts.actor_memory_query import (
@@ -121,8 +121,8 @@ class MemoryQueryBuilder:
             max_tokens=self.max_tokens,
             response_format=response_format,
         )
-        generation.text = repair_json(generation.text) # FIXME:
 
+        generation.text = repair_json(generation.text)
         output = self._parse_raw_output(generation.text)
 
         return MemoryQueryRun(

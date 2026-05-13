@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Mapping, Sequence
 
 from healthagent.schemas import PostPackage
+from healthagent.schemas.memory_query import MemoryStage
 
 from .base import (
     BaseMemoryStore,
@@ -17,24 +18,7 @@ from .base import (
 
 def _post_to_planner_query(post: PostPackage) -> str:
     chunks: list[str] = [post.tweet_text]
-
-    for image in post.image_views:
-        if image.caption:
-            chunks.append(image.caption)
-        if image.ocr:
-            chunks.append(image.ocr)
-        if image.description:
-            chunks.append(image.description)
-
-    for video in post.video_views:
-        if video.transcript:
-            chunks.append(video.transcript)
-        if video.ocr:
-            chunks.append(video.ocr)
-        if video.temporal_summary:
-            chunks.append(video.temporal_summary)
-        chunks.extend(video.keyframe_captions)
-
+    chunks.extend(post.caption.values())
     return normalize_text(" ".join(chunks))
 
 
@@ -55,11 +39,15 @@ class SimplePlannerMemory(LexicalMemoryMixin, BasePlannerMemory):
         *,
         post: PostPackage,
         query: str | None = None,
+        stage: MemoryStage | None = None,
     ) -> list[str]:
         effective_query = normalize_text(query or _post_to_planner_query(post))
+        effective_stage = stage or "core_task_incomplete"
+
         records = self._retrieve_records(
             query=effective_query,
             scopes=self.scopes,
+            stage=effective_stage,
         )
         return self._records_to_texts(records)
 
@@ -70,18 +58,21 @@ def build_planner_memory_records(
     scope: MemoryScope = "planner",
     source: str = "manual",
     priority: float = 1.0,
+    default_stage: MemoryStage = "core_task_incomplete",
 ) -> list[MemoryRecord]:
     records: list[MemoryRecord] = []
     for item in items:
         trigger = normalize_text(item.get("trigger", ""))
         rule = normalize_text(item.get("rule", ""))
         why = normalize_text(item.get("why", ""))
+        stage = item.get("stage") or default_stage
         if not trigger or not rule or not why:
             continue
 
         records.append(
             MemoryRecord(
                 scope=scope,
+                stage=stage,
                 trigger=trigger,
                 rule=rule,
                 why=why,
